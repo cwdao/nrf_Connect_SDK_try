@@ -1,12 +1,63 @@
-CMakeLists.txt.user
+# CMake 构建目录
+build/
+Build/
+out/
+bin/
+lib/
+CMakeFiles/
 CMakeCache.txt
-CMakeFiles
-CMakeScripts
-Testing
-Makefile
 cmake_install.cmake
-install_manifest.txt
-compile_commands.json
-CTestTestfile.cmake
-_deps
-CMakeUserPresets.json
+Makefile
+
+# 编译文件
+*.o
+*.obj
+*.so
+*.a
+*.lib
+*.dll
+*.exe
+*.dylib
+
+# IDE 文件
+.idea/
+.vscode/
+*.code-workspace
+
+# 日志和调试文件
+*.log
+*.tmp
+*.swp
+*.out
+*.pid
+*.ncb
+*.sdf
+*.suo
+*.user
+*.tlog
+*.pdb
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# 其他临时文件
+*.bak
+*.orig
+*.rej
+*.diff
+
+# 生成的文档
+*.html
+*.pdf
+*.docx
+
+# 覆盖率和测试报告
+*.gcno
+*.gcda
+*.gcov
+*.lcov
+*.coverage
+
+# 自动生成的文件
+*.generated.*
