@@ -20,6 +20,7 @@ Makefile
 *.dylib
 
 # IDE 文件
+.cache/
 .idea/
 .vscode/
 !.vscode/settings.json  # 例外：允许 settings.json 文件被追踪

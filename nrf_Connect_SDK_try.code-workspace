@@ -9,12 +9,6 @@
 	],
 	"settings": {
 		"C_Cpp.default.compileCommands": "${workspaceFolder}/build/${workspaceFolderBasename}/compile_commands.json",
-		// "cs_ini1": {
-		// 	"C_Cpp.default.compileCommands": "${workspaceFolder}/build/cs_ini1/compile_commands.json"
-		//   },
-		//   "cs_ref1": {
-		// 	"C_Cpp.default.compileCommands": "${workspaceFolder}/build/cs_ref1/compile_commands.json"
-		//   },
 		"nrf-connect.applications": [
 			"${workspaceFolder}\\cs_ini1",
 			"${workspaceFolder}\\cs_ref1"
@@ -22,8 +16,12 @@
 		"files.associations": {
 			"*.md": "markdown",
 			"cs.h": "c",
-			"uuid.h": "c"
+			"uuid.h": "c",
+			"ras.h": "c"
 		},
+		"clangd.arguments": [
+			"--compile-commands-dir=${workspaceFolder}/build/${workspaceFolderBasename}/"
+		  ]
 
 
 	}
