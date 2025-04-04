@@ -1,0 +1,8 @@
+{
+    "nrf-connect.applications": [
+        "${workspaceFolder}\\cs_ini1",
+        "${workspaceFolder}\\cs_ref1"
+    ],
+        // "C_Cpp.default.compileCommands": "${workspaceFolder}/cs_ini1/build/cs_ini1/compile_commands.json"
+      
+}

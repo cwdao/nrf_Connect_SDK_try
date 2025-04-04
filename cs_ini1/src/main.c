@@ -25,12 +25,12 @@ LOG_MODULE_REGISTER(app_main, LOG_LEVEL_INF);
 
 #define CON_STATUS_LED DK_LED1
 
-#define CS_CONFIG_ID	       0
-#define NUM_MODE_0_STEPS       3
+#define CS_CONFIG_ID 0
+#define NUM_MODE_0_STEPS 3
 #define PROCEDURE_COUNTER_NONE (-1)
 
-#define LOCAL_PROCEDURE_MEM                                                                        \
-	((BT_RAS_MAX_STEPS_PER_PROCEDURE * sizeof(struct bt_le_cs_subevent_step)) +                \
+#define LOCAL_PROCEDURE_MEM                                                     \
+	((BT_RAS_MAX_STEPS_PER_PROCEDURE * sizeof(struct bt_le_cs_subevent_step)) + \
 	 (BT_RAS_MAX_STEPS_PER_PROCEDURE * BT_RAS_MAX_STEP_DATA_LEN))
 
 static K_SEM_DEFINE(sem_remote_capabilities_obtained, 0, 1);
@@ -53,18 +53,24 @@ static int32_t most_recent_local_ranging_counter = PROCEDURE_COUNTER_NONE;
 static int32_t dropped_ranging_counter = PROCEDURE_COUNTER_NONE;
 static bool distance_estimation_in_progress;
 
+// 什么是子事件回调？
+// 如果正在进行距离估算，则丢弃新数据。
+// 检查子事件是否完成，或者是否被中止。
+// 如果子事件成功完成，将数据存储到 latest_local_steps 缓冲区中。
 static void subevent_result_cb(struct bt_conn *conn, struct bt_conn_le_cs_subevent_result *result)
 {
 	LOG_INF("Subevent result callback %d", result->header.procedure_counter);
 
-	if (distance_estimation_in_progress) {
+	if (distance_estimation_in_progress)
+	{
 		LOG_WRN("New procedure data received whilst estimating previous distance, drop "
-			"this procedure.");
+				"this procedure.");
 		dropped_ranging_counter = result->header.procedure_counter;
 		return;
 	}
 
-	if (result->header.subevent_done_status == BT_CONN_LE_CS_SUBEVENT_ABORTED) {
+	if (result->header.subevent_done_status == BT_CONN_LE_CS_SUBEVENT_ABORTED)
+	{
 		/* If this subevent was aborted, drop the entire procedure for now. */
 		LOG_WRN("Subevent aborted");
 		dropped_ranging_counter = result->header.procedure_counter;
@@ -72,20 +78,25 @@ static void subevent_result_cb(struct bt_conn *conn, struct bt_conn_le_cs_subeve
 		return;
 	}
 
-	if (dropped_ranging_counter == result->header.procedure_counter) {
+	if (dropped_ranging_counter == result->header.procedure_counter)
+	{
 		return;
 	}
 
-	if (result->step_data_buf) {
-		if (result->step_data_buf->len <= net_buf_simple_tailroom(&latest_local_steps)) {
+	if (result->step_data_buf)
+	{
+		if (result->step_data_buf->len <= net_buf_simple_tailroom(&latest_local_steps))
+		{
 			uint16_t len = result->step_data_buf->len;
 			uint8_t *step_data = net_buf_simple_pull_mem(result->step_data_buf, len);
 
 			net_buf_simple_add_mem(&latest_local_steps, step_data, len);
-		} else {
+		}
+		else
+		{
 			LOG_ERR("Not enough memory to store step data. (%d > %d)",
-				latest_local_steps.len + result->step_data_buf->len,
-				latest_local_steps.size);
+					latest_local_steps.len + result->step_data_buf->len,
+					latest_local_steps.size);
 			net_buf_simple_reset(&latest_local_steps);
 			dropped_ranging_counter = result->header.procedure_counter;
 			return;
@@ -95,23 +106,28 @@ static void subevent_result_cb(struct bt_conn *conn, struct bt_conn_le_cs_subeve
 	dropped_ranging_counter = PROCEDURE_COUNTER_NONE;
 	n_ap = result->header.num_antenna_paths;
 
-	if (result->header.procedure_done_status == BT_CONN_LE_CS_PROCEDURE_COMPLETE) {
+	if (result->header.procedure_done_status == BT_CONN_LE_CS_PROCEDURE_COMPLETE)
+	{
 		most_recent_local_ranging_counter = result->header.procedure_counter;
 		distance_estimation_in_progress = true;
 		k_sem_give(&sem_procedure_done);
-	} else if (result->header.procedure_done_status == BT_CONN_LE_CS_PROCEDURE_ABORTED) {
+	}
+	else if (result->header.procedure_done_status == BT_CONN_LE_CS_PROCEDURE_ABORTED)
+	{
 		LOG_WRN("Procedure aborted");
 		net_buf_simple_reset(&latest_local_steps);
 	}
 }
 
+// 当测距数据获取完成时触发
 static void ranging_data_get_complete_cb(struct bt_conn *conn, uint16_t ranging_counter, int err)
 {
 	ARG_UNUSED(conn);
 
-	if (err) {
+	if (err)
+	{
 		LOG_ERR("Error when getting ranging data with ranging counter %d (err %d)",
-			ranging_counter, err);
+				ranging_counter, err);
 		return;
 	}
 
@@ -119,6 +135,7 @@ static void ranging_data_get_complete_cb(struct bt_conn *conn, uint16_t ranging_
 	k_sem_give(&sem_rd_complete);
 }
 
+// 当对端设备的测距数据准备好时触发
 static void ranging_data_ready_cb(struct bt_conn *conn, uint16_t ranging_counter)
 {
 	LOG_INF("Ranging data ready %i", ranging_counter);
@@ -126,15 +143,18 @@ static void ranging_data_ready_cb(struct bt_conn *conn, uint16_t ranging_counter
 	k_sem_give(&sem_rd_ready);
 }
 
+// 当对端设备的测距数据被覆盖时触发
 static void ranging_data_overwritten_cb(struct bt_conn *conn, uint16_t ranging_counter)
 {
 	LOG_INF("Ranging data overwritten %i", ranging_counter);
 }
 
+// 当MTU交换成功时触发
 static void mtu_exchange_cb(struct bt_conn *conn, uint8_t err,
-			    struct bt_gatt_exchange_params *params)
+							struct bt_gatt_exchange_params *params)
 {
-	if (err) {
+	if (err)
+	{
 		LOG_ERR("MTU exchange failed (err %d)", err);
 		return;
 	}
@@ -143,6 +163,7 @@ static void mtu_exchange_cb(struct bt_conn *conn, uint8_t err,
 	k_sem_give(&sem_mtu_exchange_done);
 }
 
+// 当发现服务成功时触发，服务发现成功，初始化探测服务的句柄
 static void discovery_completed_cb(struct bt_gatt_dm *dm, void *context)
 {
 	int err;
@@ -154,24 +175,28 @@ static void discovery_completed_cb(struct bt_gatt_dm *dm, void *context)
 	bt_gatt_dm_data_print(dm);
 
 	err = bt_ras_rreq_alloc_and_assign_handles(dm, conn);
-	if (err) {
+	if (err)
+	{
 		LOG_ERR("RAS RREQ alloc init failed (err %d)", err);
 	}
 
 	err = bt_gatt_dm_data_release(dm);
-	if (err) {
+	if (err)
+	{
 		LOG_ERR("Could not release the discovery data (err %d)", err);
 	}
 
 	k_sem_give(&sem_discovery_done);
 }
 
+// 当发现服务失败时触发，如果服务未找到，断开连接
 static void discovery_service_not_found_cb(struct bt_conn *conn, void *context)
 {
 	LOG_INF("The service could not be found during the discovery, disconnecting");
 	bt_conn_disconnect(connection, BT_HCI_ERR_REMOTE_USER_TERM_CONN);
 }
 
+// 当发现服务失败时触发，如果服务未找到，断开连接
 static void discovery_error_found_cb(struct bt_conn *conn, int err, void *context)
 {
 	LOG_INF("The discovery procedure failed (err %d)", err);
@@ -184,15 +209,17 @@ static struct bt_gatt_dm_cb discovery_cb = {
 	.error_found = discovery_error_found_cb,
 };
 
+// 当安全状态改变时触发，当蓝牙安全级别变化时触发
 static void security_changed(struct bt_conn *conn, bt_security_t level, enum bt_security_err err)
 {
 	char addr[BT_ADDR_LE_STR_LEN];
 
 	bt_addr_le_to_str(bt_conn_get_dst(conn), addr, sizeof(addr));
 
-	if (err) {
+	if (err)
+	{
 		LOG_ERR("Security failed: %s level %u err %d %s", addr, level, err,
-			bt_security_err_to_str(err));
+				bt_security_err_to_str(err));
 		return;
 	}
 
@@ -206,6 +233,7 @@ static bool le_param_req(struct bt_conn *conn, struct bt_le_conn_param *param)
 	return false;
 }
 
+// 处理设备连接成功事件，点亮 LED 并更新连接状态。
 static void connected_cb(struct bt_conn *conn, uint8_t err)
 {
 	char addr[BT_ADDR_LE_STR_LEN];
@@ -213,7 +241,8 @@ static void connected_cb(struct bt_conn *conn, uint8_t err)
 	(void)bt_addr_le_to_str(bt_conn_get_dst(conn), addr, sizeof(addr));
 	LOG_INF("Connected to %s (err 0x%02X)", addr, err);
 
-	if (err) {
+	if (err)
+	{
 		bt_conn_unref(conn);
 		connection = NULL;
 	}
@@ -225,6 +254,7 @@ static void connected_cb(struct bt_conn *conn, uint8_t err)
 	dk_set_led_on(CON_STATUS_LED);
 }
 
+// 处理设备断开连接事件，熄灭 LED 并更新连接状态。
 static void disconnected_cb(struct bt_conn *conn, uint8_t reason)
 {
 	LOG_INF("Disconnected (reason 0x%02X)", reason);
@@ -254,17 +284,20 @@ static void security_enabled_cb(struct bt_conn *conn)
 }
 
 static void procedure_enabled_cb(struct bt_conn *conn,
-				 struct bt_conn_le_cs_procedure_enable_complete *params)
+								 struct bt_conn_le_cs_procedure_enable_complete *params)
 {
-	if (params->state == 1) {
+	if (params->state == 1)
+	{
 		LOG_INF("CS procedures enabled.");
-	} else {
+	}
+	else
+	{
 		LOG_INF("CS procedures disabled.");
 	}
 }
 
 static void scan_filter_match(struct bt_scan_device_info *device_info,
-			      struct bt_scan_filter_match *filter_match, bool connectable)
+							  struct bt_scan_filter_match *filter_match, bool connectable)
 {
 	char addr[BT_ADDR_LE_STR_LEN];
 
@@ -280,7 +313,8 @@ static void scan_connecting_error(struct bt_scan_device_info *device_info)
 	LOG_INF("Connecting failed, restarting scanning");
 
 	err = bt_scan_start(BT_SCAN_TYPE_SCAN_PASSIVE);
-	if (err) {
+	if (err)
+	{
 		LOG_ERR("Failed to restart scanning (err %i)", err);
 		return;
 	}
@@ -293,6 +327,8 @@ static void scan_connecting(struct bt_scan_device_info *device_info, struct bt_c
 
 BT_SCAN_CB_INIT(scan_cb, scan_filter_match, NULL, scan_connecting_error, scan_connecting);
 
+// 初始化扫描参数，添加服务过滤器。
+// 启用扫描过滤器以寻找支持信道探测的设备。
 static int scan_init(void)
 {
 	int err;
@@ -304,13 +340,15 @@ static int scan_init(void)
 	bt_scan_cb_register(&scan_cb);
 
 	err = bt_scan_filter_add(BT_SCAN_FILTER_TYPE_UUID, BT_UUID_RANGING_SERVICE);
-	if (err) {
+	if (err)
+	{
 		LOG_ERR("Scanning filters cannot be set (err %d)", err);
 		return err;
 	}
 
 	err = bt_scan_filter_enable(BT_SCAN_UUID_FILTER, false);
-	if (err) {
+	if (err)
+	{
 		LOG_ERR("Filters cannot be turned on (err %d)", err);
 		return err;
 	}
@@ -330,12 +368,6 @@ BT_CONN_CB_DEFINE(conn_cb) = {
 	.le_cs_subevent_data_available = subevent_result_cb,
 };
 
-
-
-
-
-
-
 int main(void)
 {
 	int err;
@@ -345,19 +377,22 @@ int main(void)
 	dk_leds_init();
 
 	err = bt_enable(NULL);
-	if (err) {
+	if (err)
+	{
 		LOG_ERR("Bluetooth init failed (err %d)", err);
 		return 0;
 	}
 
 	err = scan_init();
-	if (err) {
+	if (err)
+	{
 		LOG_ERR("Scan init failed (err %d)", err);
 		return 0;
 	}
 
 	err = bt_scan_start(BT_SCAN_TYPE_SCAN_PASSIVE);
-	if (err) {
+	if (err)
+	{
 		LOG_ERR("Scanning failed to start (err %i)", err);
 		return 0;
 	}
@@ -365,7 +400,8 @@ int main(void)
 	k_sem_take(&sem_connected, K_FOREVER);
 
 	err = bt_conn_set_security(connection, BT_SECURITY_L2);
-	if (err) {
+	if (err)
+	{
 		LOG_ERR("Failed to encrypt connection (err %d)", err);
 		return 0;
 	}
@@ -379,7 +415,8 @@ int main(void)
 	k_sem_take(&sem_mtu_exchange_done, K_FOREVER);
 
 	err = bt_gatt_dm_start(connection, BT_UUID_RANGING_SERVICE, &discovery_cb, NULL);
-	if (err) {
+	if (err)
+	{
 		LOG_ERR("Discovery failed (err %d)", err);
 		return 0;
 	}
@@ -393,38 +430,45 @@ int main(void)
 		.max_tx_power = BT_HCI_OP_LE_CS_MAX_MAX_TX_POWER,
 	};
 
+
 	err = bt_le_cs_set_default_settings(connection, &default_settings);
-	if (err) {
+	if (err)
+	{
 		LOG_ERR("Failed to configure default CS settings (err %d)", err);
 		return 0;
 	}
 
 	err = bt_ras_rreq_rd_overwritten_subscribe(connection, ranging_data_overwritten_cb);
-	if (err) {
+	if (err)
+	{
 		LOG_ERR("RAS RREQ ranging data overwritten subscribe failed (err %d)", err);
 		return 0;
 	}
 
 	err = bt_ras_rreq_rd_ready_subscribe(connection, ranging_data_ready_cb);
-	if (err) {
+	if (err)
+	{
 		LOG_ERR("RAS RREQ ranging data ready subscribe failed (err %d)", err);
 		return 0;
 	}
 
 	err = bt_ras_rreq_on_demand_rd_subscribe(connection);
-	if (err) {
+	if (err)
+	{
 		LOG_ERR("RAS RREQ On-demand ranging data subscribe failed (err %d)", err);
 		return 0;
 	}
 
 	err = bt_ras_rreq_cp_subscribe(connection);
-	if (err) {
+	if (err)
+	{
 		LOG_ERR("RAS RREQ CP subscribe failed (err %d)", err);
 		return 0;
 	}
 
 	err = bt_le_cs_read_remote_supported_capabilities(connection);
-	if (err) {
+	if (err)
+	{
 		LOG_ERR("Failed to exchange CS capabilities (err %d)", err);
 		return 0;
 	}
@@ -450,9 +494,11 @@ int main(void)
 
 	bt_le_cs_set_valid_chmap_bits(config_params.channel_map);
 
+	// 创建信道探测配置，指定探测模式、步数、天线配置等
 	err = bt_le_cs_create_config(connection, &config_params,
-				     BT_LE_CS_CREATE_CONFIG_CONTEXT_LOCAL_AND_REMOTE);
-	if (err) {
+								 BT_LE_CS_CREATE_CONFIG_CONTEXT_LOCAL_AND_REMOTE);
+	if (err)
+	{
 		LOG_ERR("Failed to create CS config (err %d)", err);
 		return 0;
 	}
@@ -460,7 +506,8 @@ int main(void)
 	k_sem_take(&sem_config_created, K_FOREVER);
 
 	err = bt_le_cs_security_enable(connection);
-	if (err) {
+	if (err)
+	{
 		LOG_ERR("Failed to start CS Security (err %d)", err);
 		return 0;
 	}
@@ -483,8 +530,10 @@ int main(void)
 		.snr_control_reflector = BT_LE_CS_REFLECTOR_SNR_CONTROL_NOT_USED,
 	};
 
+	// 设置信道探测的具体参数，例如信号传输功率、物理层（PHY）等
 	err = bt_le_cs_set_procedure_parameters(connection, &procedure_params);
-	if (err) {
+	if (err)
+	{
 		LOG_ERR("Failed to set procedure parameters (err %d)", err);
 		return 0;
 	}
@@ -495,46 +544,58 @@ int main(void)
 	};
 
 	err = bt_le_cs_procedure_enable(connection, &params);
-	if (err) {
+	if (err)
+	{
 		LOG_ERR("Failed to enable CS procedures (err %d)", err);
 		return 0;
 	}
 
-	while (true) {
+	// 主循环和距离估算
+	while (true)
+	{
+		// 等待信道探测完成
 		k_sem_take(&sem_procedure_done, K_FOREVER);
 		distance_estimation_in_progress = true;
 
+		// 等待对端设备准备好测距数据
 		err = k_sem_take(&sem_rd_ready, K_SECONDS(1));
-		if (err) {
+		if (err)
+		{
 			LOG_WRN("Timeout waiting for ranging data ready (err %d)", err);
 			goto retry;
 		}
 
-		if (most_recent_peer_ranging_counter != most_recent_local_ranging_counter) {
+
+		if (most_recent_peer_ranging_counter != most_recent_local_ranging_counter)
+		{
 			LOG_WRN("Mismatch of local and peer ranging counters (%d != %d)",
-				most_recent_peer_ranging_counter,
-				most_recent_local_ranging_counter);
+					most_recent_peer_ranging_counter,
+					most_recent_local_ranging_counter);
 			goto retry;
 		}
 
+		// 获取对端设备的测距数据
 		err = bt_ras_rreq_cp_get_ranging_data(connection, &latest_peer_steps,
-						      most_recent_peer_ranging_counter,
-						      ranging_data_get_complete_cb);
-		if (err) {
+											  most_recent_peer_ranging_counter,
+											  ranging_data_get_complete_cb);
+		if (err)
+		{
 			LOG_ERR("Get ranging data failed (err %d)", err);
 			goto retry;
 		}
 
+		// 等待测距数据获取完成
 		err = k_sem_take(&sem_rd_complete, K_SECONDS(5));
-		if (err) {
+		if (err)
+		{
 			LOG_ERR("Timeout waiting for ranging data complete (err %d)", err);
 			goto retry;
 		}
 
 		estimate_distance(&latest_local_steps, &latest_peer_steps, n_ap,
-				  BT_CONN_LE_CS_ROLE_INITIATOR);
+						  BT_CONN_LE_CS_ROLE_INITIATOR);
 
-retry:
+	retry:
 		net_buf_simple_reset(&latest_local_steps);
 		net_buf_simple_reset(&latest_peer_steps);
 		distance_estimation_in_progress = false;
