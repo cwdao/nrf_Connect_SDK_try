@@ -150,7 +150,7 @@ estimate_distance_using_phase_slope(struct iq_sample_and_channel *data,
   // LOG_INF("Sorted Data -> Channel : Theta");
   // for (uint8_t i = 0; i < num_angles; i++) {
   //   uint8_t channel = (uint8_t)(frequencies[i] - 2402); // 从频率计算信道编号
-  //   // LOG_INF("ch[%d] : %f radians", channel, (double)theta[i]);
+    // LOG_INF("ch[%d] : %f radians", channel, (double)theta[i]);
   // }
 
   /* One-dimensional phase unwrapping */
