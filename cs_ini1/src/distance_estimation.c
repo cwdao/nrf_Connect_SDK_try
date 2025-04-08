@@ -130,10 +130,10 @@ estimate_distance_using_phase_slope(struct iq_sample_and_channel *data,
       // 计算频率
       frequencies[num_angles] = 1.0 * CS_FREQUENCY_MHZ(data[i].channel);
 
-      LOG_INF("Raw Data -> Channel: %d, Frequency: %f MHz, Angle (theta): %f "
-              "radians",
-              data[i].channel, (double)frequencies[num_angles],
-              (double)theta[num_angles]);
+      // LOG_INF("Raw Data -> Channel: %d, Frequency: %f MHz, Angle (theta): %f "
+      //         "radians",
+      //         data[i].channel, (double)frequencies[num_angles],
+      //         (double)theta[num_angles]);
 
       num_angles++;
     }
@@ -147,11 +147,11 @@ estimate_distance_using_phase_slope(struct iq_sample_and_channel *data,
   // 按频率对相位排序
   bubblesort_2(frequencies, theta, num_angles);
   // 排序完成后，通过频率重新计算信道编号
-  LOG_INF("Sorted Data -> Channel : Theta");
-  for (uint8_t i = 0; i < num_angles; i++) {
-    uint8_t channel = (uint8_t)(frequencies[i] - 2402); // 从频率计算信道编号
-    LOG_INF("ch[%d] : %f radians", channel, (double)theta[i]);
-  }
+  // LOG_INF("Sorted Data -> Channel : Theta");
+  // for (uint8_t i = 0; i < num_angles; i++) {
+  //   uint8_t channel = (uint8_t)(frequencies[i] - 2402); // 从频率计算信道编号
+  //   // LOG_INF("ch[%d] : %f radians", channel, (double)theta[i]);
+  // }
 
   /* One-dimensional phase unwrapping */
   // 相位展开（Phase Unwrapping）
