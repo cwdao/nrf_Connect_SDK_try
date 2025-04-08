@@ -116,7 +116,7 @@ estimate_distance_using_phase_slope(struct iq_sample_and_channel *data,
   uint16_t num_angles = 0;
   static float theta[MAX_NUM_IQ_SAMPLES];
   static float frequencies[MAX_NUM_IQ_SAMPLES];
-
+  static float channels[MAX_NUM_IQ_SAMPLES]; // 用于存储信道信息
   for (uint8_t i = 0; i < len; i++) {
     if (!data[i].failed) {
       // 计算 IQ 数据的复数乘积
@@ -130,6 +130,11 @@ estimate_distance_using_phase_slope(struct iq_sample_and_channel *data,
       // 计算频率
       frequencies[num_angles] = 1.0 * CS_FREQUENCY_MHZ(data[i].channel);
 
+      LOG_INF("Raw Data -> Channel: %d, Frequency: %f MHz, Angle (theta): %f "
+              "radians",
+              data[i].channel, (double)frequencies[num_angles],
+              (double)theta[num_angles]);
+
       num_angles++;
     }
   }
@@ -141,6 +146,12 @@ estimate_distance_using_phase_slope(struct iq_sample_and_channel *data,
 
   // 按频率对相位排序
   bubblesort_2(frequencies, theta, num_angles);
+  // 排序完成后，通过频率重新计算信道编号
+  LOG_INF("Sorted Data -> Channel : Theta");
+  for (uint8_t i = 0; i < num_angles; i++) {
+    uint8_t channel = (uint8_t)(frequencies[i] - 2402); // 从频率计算信道编号
+    LOG_INF("ch[%d] : %f radians", channel, (double)theta[i]);
+  }
 
   /* One-dimensional phase unwrapping */
   // 相位展开（Phase Unwrapping）
@@ -159,6 +170,13 @@ estimate_distance_using_phase_slope(struct iq_sample_and_channel *data,
       }
     }
   }
+
+      // 输出相位展开后的信道和相位
+    LOG_INF("Unwrapped Data -> Channel : Theta");
+    for (uint8_t i = 0; i < num_angles; i++) {
+        uint8_t channel = (uint8_t)(frequencies[i] - 2402); // 从频率计算信道编号
+        LOG_INF("ch[%d] : %f radians", channel, (double)theta[i]);
+    }
 
   // 使用线性回归计算相位斜率
   float phase_slope = linear_regression(frequencies, theta, num_angles);
