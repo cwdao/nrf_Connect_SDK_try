@@ -553,11 +553,11 @@ int main(void)
 	// 主循环和距离估算
 	while (true)
 	{
-		// 等待信道探测完成
+		// 等待测距数据准备
 		k_sem_take(&sem_procedure_done, K_FOREVER);
 		distance_estimation_in_progress = true;
 
-		// 等待对端设备准备好测距数据
+		// 检查对端和本地的测距计数器是否匹配
 		err = k_sem_take(&sem_rd_ready, K_SECONDS(1));
 		if (err)
 		{
@@ -591,7 +591,8 @@ int main(void)
 			LOG_ERR("Timeout waiting for ranging data complete (err %d)", err);
 			goto retry;
 		}
-
+ 
+		// 调用距离估算函数
 		estimate_distance(&latest_local_steps, &latest_peer_steps, n_ap,
 						  BT_CONN_LE_CS_ROLE_INITIATOR);
 
