@@ -514,11 +514,11 @@ int main(void) {
   const struct bt_le_cs_set_procedure_parameters_param procedure_params = {
       .config_id = CS_CONFIG_ID,
       .max_procedure_len = 100,
-      .min_procedure_interval = 100,
-      .max_procedure_interval = 100,
+      .min_procedure_interval = 1,
+      .max_procedure_interval = 1,
       .max_procedure_count = 0,
-      .min_subevent_len = 60000,
-      .max_subevent_len = 60000,
+      .min_subevent_len = 20000,
+      .max_subevent_len = 40000,
       .tone_antenna_config_selection =
           BT_LE_CS_TONE_ANTENNA_CONFIGURATION_INDEX_ONE,
       .phy = BT_LE_CS_PROCEDURE_PHY_1M,
