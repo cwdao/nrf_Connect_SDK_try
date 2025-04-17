@@ -340,6 +340,85 @@ static bool process_step_data(struct bt_le_cs_subevent_step *local_step,
   return true;
 }
 
+static float
+estimate_distance_using_phase_slope_fake(struct iq_sample_and_channel *data,
+                                    uint8_t len) {
+  int32_t combined_i;
+  int32_t combined_q;
+  uint16_t num_angles = 0;
+  static float theta[MAX_NUM_IQ_SAMPLES];
+  static float frequencies[MAX_NUM_IQ_SAMPLES];
+  static float channels[MAX_NUM_IQ_SAMPLES]; // 用于存储信道信息
+  for (uint8_t i = 0; i < len; i++) {
+    if (!data[i].failed) {
+      // 计算 IQ 数据的复数乘积
+      calc_complex_product(data[i].local_iq_sample.i, data[i].local_iq_sample.q,
+                           data[i].peer_iq_sample.i, data[i].peer_iq_sample.q,
+                           &combined_i, &combined_q);
+
+      // 计算相位角,这就是反三角函数吧
+      theta[num_angles] = atan2(1.0 * combined_q, 1.0 * combined_i);
+
+      // 计算频率
+      frequencies[num_angles] = 1.0 * CS_FREQUENCY_MHZ(data[i].channel);
+
+      // LOG_INF("Raw Data -> Channel: %d, Frequency: %f MHz, Angle (theta): %f "
+      //         "radians",
+      //         data[i].channel, (double)frequencies[num_angles],
+      //         (double)theta[num_angles]);
+
+      num_angles++;
+    }
+  }
+
+  // 如果采样点不足，无法计算距离
+  if (num_angles < 2) {
+    return 0.0;
+  }
+
+  // 按频率对相位排序
+  // bubblesort_2(frequencies, theta, num_angles);
+  // 排序完成后，通过频率重新计算信道编号
+  // LOG_INF("Sorted Data -> Channel : Theta");
+  // for (uint8_t i = 0; i < num_angles; i++) {
+  //   uint8_t channel = (uint8_t)(frequencies[i] - 2402); // 从频率计算信道编号
+    // LOG_INF("ch[%d] : %f radians", channel, (double)theta[i]);
+  // }
+
+  /* One-dimensional phase unwrapping */
+  // 相位展开（Phase Unwrapping）
+  // 遍历所有相位角，确保相位值在 −π 到 π 范围内连续。
+  for (uint8_t i = 1; i < num_angles; i++) {
+    float difference = theta[i] - theta[i - 1];
+    // 如果相邻相位角的差值大于 π，则将后续相位值减去 2π
+    if (difference > PI) {
+      for (uint8_t j = i; j < num_angles; j++) {
+        theta[j] -= 2.0f * PI;
+      }
+    } else if (difference < -PI) {
+      // 如果相邻相位角的差值小于 -π，则将后续相位值加上 2π
+      for (uint8_t j = i; j < num_angles; j++) {
+        theta[j] += 2.0f * PI;
+      }
+    }
+  }
+
+      // 输出相位展开后的信道和相位
+    LOG_INF("Unwrapped Data -> Channel : Theta");
+    for (uint8_t i = 0; i < num_angles; i++) {
+        uint8_t channel = (uint8_t)(frequencies[i] - 2402); // 从频率计算信道编号
+        LOG_INF("ch[%d] : %f radians", channel, (double)theta[i]);
+    }
+
+  // 使用线性回归计算相位斜率
+  // float phase_slope = linear_regression(frequencies, theta, num_angles);
+
+  // 根据相位斜率计算距离
+  // float distance = -phase_slope * (SPEED_OF_LIGHT_M_PER_S / (4 * PI));
+
+  return 10000 / 1000000.0f; /* Scale to meters. */
+}
+
 void estimate_distance(struct net_buf_simple *local_steps,
                        struct net_buf_simple *peer_steps, uint8_t n_ap,
                        enum bt_conn_le_cs_role role) {
@@ -356,7 +435,7 @@ void estimate_distance(struct net_buf_simple *local_steps,
   bt_ras_rreq_rd_subevent_data_parse(peer_steps, local_steps, context.role,
                                      NULL, process_step_data, &context);
 
-  float phase_slope_based_distance = estimate_distance_using_phase_slope(
+  float phase_slope_based_distance = estimate_distance_using_phase_slope_fake(
       iq_sample_channel_data, context.iq_sample_channel_data_index);
 
   float rtt_based_distance =
@@ -378,3 +457,4 @@ void estimate_distance(struct net_buf_simple *local_steps,
             context.iq_sample_channel_data_index);
   }
 }
+
