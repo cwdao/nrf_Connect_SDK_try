@@ -5,12 +5,17 @@
 		},
 		{
 			"path": "cs_ref1"
+		},
+		{
+			"name": "cs_ini1_fast_try",
+			"path": "cs_ini1_fast_try"
 		}
 	],
 	"settings": {
 		"C_Cpp.default.compileCommands": "${workspaceFolder}/build/${workspaceFolderBasename}/compile_commands.json",
 		"nrf-connect.applications": [
 			"${workspaceFolder}\\cs_ini1",
+			"${workspaceFolder}\\cs_ini1_fast_try",
 			"${workspaceFolder}\\cs_ref1"
 		],
 		"files.associations": {
