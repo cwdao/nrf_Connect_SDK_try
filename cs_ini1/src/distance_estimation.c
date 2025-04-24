@@ -435,7 +435,7 @@ void estimate_distance(struct net_buf_simple *local_steps,
   bt_ras_rreq_rd_subevent_data_parse(peer_steps, local_steps, context.role,
                                      NULL, process_step_data, &context);
 
-  float phase_slope_based_distance = estimate_distance_using_phase_slope_fake(
+  float phase_slope_based_distance = estimate_distance_using_phase_slope(
       iq_sample_channel_data, context.iq_sample_channel_data_index);
 
   float rtt_based_distance =

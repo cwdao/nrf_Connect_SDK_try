@@ -351,6 +351,7 @@ static void set_custom_channel_map(uint8_t channel_map[10]) {
   // 定义启用的信道集合。例如：启用信道 2、3、10、11
   uint8_t valid_channels[] = {2,  5,  8,  11, 14, 17, 20, 23, 26, 29, 32,
                               35, 38, 41, 44, 47, 50};
+  // uint8_t valid_channels[] = {2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2};
 
   // 遍历启用的信道集合，将对应 bit 设置为有效
   for (size_t i = 0; i < sizeof(valid_channels) / sizeof(valid_channels[0]);
@@ -514,8 +515,8 @@ int main(void) {
   const struct bt_le_cs_set_procedure_parameters_param procedure_params = {
       .config_id = CS_CONFIG_ID,
       .max_procedure_len = 100,
-      .min_procedure_interval = 1,
-      .max_procedure_interval = 1,
+      .min_procedure_interval = 5,//do not larger than 5 until new data collected method is enbaled.
+      .max_procedure_interval = 5,
       .max_procedure_count = 0,
       .min_subevent_len = 20000,
       .max_subevent_len = 40000,
