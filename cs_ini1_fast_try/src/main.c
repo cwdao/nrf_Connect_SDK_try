@@ -486,7 +486,7 @@ int main(void) {
       .channel_map_repetition = 1,
       .channel_selection_type = BT_CONN_LE_CS_CHSEL_TYPE_3B,
       .ch3c_shape = BT_CONN_LE_CS_CH3C_SHAPE_HAT,
-      .ch3c_jump = 2,
+      .ch3c_jump = 1,
   };
 
   bt_le_cs_set_valid_chmap_bits(config_params.channel_map);
