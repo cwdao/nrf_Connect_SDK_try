@@ -9,6 +9,10 @@
 		{
 			"name": "cs_ini1_fast_try",
 			"path": "cs_ini1_fast_try"
+		},
+		{
+			"name": "ncs301_cs_ini",
+			"path": "ncs301_cs_ini"
 		}
 	],
 	"settings": {
@@ -22,7 +26,8 @@
 			"*.md": "markdown",
 			"cs.h": "c",
 			"uuid.h": "c",
-			"ras.h": "c"
+			"ras.h": "c",
+			"cs_de.h": "c"
 		},
 		"clangd.arguments": [
 			"--compile-commands-dir=${workspaceFolder}/build/${workspaceFolderBasename}/"
