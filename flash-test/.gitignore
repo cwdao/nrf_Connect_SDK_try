@@ -1,0 +1,8 @@
+build/
+*.si4project
+# editors
+*.swp
+*~
+
+# build
+/build*/
