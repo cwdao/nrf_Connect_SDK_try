@@ -1,4 +1,6 @@
 /*
+ * 2025-08-03
+ * 这段代码是读写flash的示例，随后添加蓝牙测距功能。
  * Copyright (c) 2016 Intel Corporation.
  *
  * SPDX-License-Identifier: Apache-2.0
@@ -157,6 +159,7 @@ K_WORK_DEFINE(timer1_def, timer1_handler);
 static void timer_expiry_function(struct k_timer *timer_id) {
   k_work_submit(&timer1_def);
 }
+// 设置了两个状态以区分目前是应该写入还是应该打印
 static void timer1_handler(struct k_work *work) {
   int err = -1;
 
@@ -207,6 +210,7 @@ static void work_irq0_handler(struct k_work *work) {
     run_state = 0;
     flash_index = 0;
     LOG_INF("start write timer");
+    // 在此开始启动timer
     k_timer_start(&my_timer, K_MSEC(1000), K_MSEC(WRITE_FRQ_MS));
     return;
   }
@@ -218,6 +222,7 @@ K_WORK_DEFINE(work_irq0_def, work_irq0_handler);
 //  能避免在中断上下文中进行耗时操作，从而提升系统实时性和稳定性
 static void _irq0_cb(const struct device *port, struct gpio_callback *cb,
                      gpio_port_pins_t pins) {
+  // 将 work_irq0_def 添加到 Zephyr 的全局工作队列中，等待系统调度执行
   k_work_submit(&work_irq0_def);
 }
 // 初始化按钮0，配置为输入并执行中断回调函数，并配置为下降沿触发
@@ -237,6 +242,7 @@ static void _init_button0() {
   gpio_pin_interrupt_configure(_BUTTON_0_PRT, _BUTTON_0_PIN,
                                GPIO_INT_EDGE_FALLING);
 }
+// 按键1，停止记录或停止打印
 static void work_irq1_handler(struct k_work *work) {
   if (!gpio_pin_get(_BUTTON_1_PRT, _BUTTON_1_PIN)) {
     LOG_INF("irq1 release");
@@ -269,6 +275,7 @@ static void _init_button1() {
   gpio_pin_interrupt_configure(_BUTTON_1_PRT, _BUTTON_1_PIN,
                                GPIO_INT_EDGE_FALLING);
 }
+// 按键2，开始打印到串口，核心功能在timer1_handler中
 static void work_irq2_handler(struct k_work *work) {
   if (!gpio_pin_get(_BUTTON_2_PRT, _BUTTON_2_PIN)) {
     LOG_INF("irq2 release");
