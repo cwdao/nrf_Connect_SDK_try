@@ -145,7 +145,13 @@ static struct gpio_callback _button3_cb;
 #define WRITE_FRQ_MS 20
 
 const uint8_t erased[] = {0xff, 0xff, 0xff, 0xff};
-static __IO uint8_t run_state = 0xff;
+typedef enum {
+    RUN_STATE_IDLE = 0xff,
+    RUN_STATE_WRITE = 0,
+    RUN_STATE_READ = 2,
+} RunState_t;
+
+static __IO RunState_t run_state = RUN_STATE_IDLE;
 static __IO uint64_t flash_index = 0;
 static uint64_t flash_size = 0;
 static cs_de_report_t the_rep = {0};
@@ -163,7 +169,7 @@ static void timer_expiry_function(struct k_timer *timer_id) {
 static void timer1_handler(struct k_work *work) {
   int err = -1;
 
-  if (0 == run_state) {
+  if (RUN_STATE_WRITE == run_state) {
     the_rep.index = flash_index;
     the_rep.n_ap = flash_index + 1;
     LED0_ON();
@@ -173,25 +179,25 @@ static void timer1_handler(struct k_work *work) {
     if (0 != err) {
       LOG_WRN("===> flash wirte err! %d", err);
       k_timer_stop(&my_timer);
-      run_state = 0xff;
+      run_state = RUN_STATE_IDLE;
       return;
     }
     flash_index++;
     return;
   }
-  if (2 == run_state) {
+  if (RUN_STATE_READ == run_state) {
     LED0_ON();
     err = flash_read(flash_dev, flash_index * SPI_FLASH_SECTOR_SIZE, &the_rep,
                      sizeof(cs_de_report_t));
     LED0_OFF();
     if (0 != err) {
       LOG_WRN("===> flash read err! %d", err);
-      run_state = 0xff;
+      run_state = RUN_STATE_IDLE;
       return;
     }
     if (-1 == the_rep.index) {
       LOG_WRN("Log read got -1, stop");
-      run_state = 0xff;
+      run_state = RUN_STATE_IDLE;
       return;
     }
     _debug_report(&the_rep);
@@ -206,8 +212,8 @@ static void work_irq0_handler(struct k_work *work) {
     LOG_INF("irq0 release");
     return;
   }
-  if (0xff == run_state) {
-    run_state = 0;
+  if (RUN_STATE_IDLE == run_state) {
+    run_state = RUN_STATE_WRITE;
     flash_index = 0;
     LOG_INF("start write timer");
     // 在此开始启动timer
@@ -248,10 +254,10 @@ static void work_irq1_handler(struct k_work *work) {
     LOG_INF("irq1 release");
     return;
   }
-  if (0 == run_state || 2 == run_state) {
+  if (RUN_STATE_WRITE == run_state || RUN_STATE_READ == run_state) {
     LOG_INF("stop write/log timer");
     k_timer_stop(&my_timer);
-    run_state = 0xff;
+    run_state = RUN_STATE_IDLE;
     return;
   }
   LOG_INF("button1 press but start err %d", run_state);
@@ -281,8 +287,8 @@ static void work_irq2_handler(struct k_work *work) {
     LOG_INF("irq2 release");
     return;
   }
-  if (0xff == run_state) {
-    run_state = 2;
+  if (RUN_STATE_IDLE == run_state) {
+    run_state = RUN_STATE_READ;
     flash_index = 0;
     LOG_INF("start log timer");
     k_timer_start(&my_timer, K_MSEC(1000), K_NO_WAIT);
@@ -315,7 +321,7 @@ static void work_irq3_handler(struct k_work *work) {
     LOG_INF("irq3 release");
     return;
   }
-  if (0xff == run_state) {
+  if (RUN_STATE_IDLE == run_state) {
 #if 1
     for (uint32_t i = 0; i < flash_size / SPI_FLASH_SECTOR_SIZE; i++) {
       LED0_ON();
