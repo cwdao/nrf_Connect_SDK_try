@@ -146,9 +146,9 @@ static struct gpio_callback _button3_cb;
 
 const uint8_t erased[] = {0xff, 0xff, 0xff, 0xff};
 typedef enum {
-    RUN_STATE_IDLE = 0xff,
-    RUN_STATE_WRITE = 0,
-    RUN_STATE_READ = 2,
+  RUN_STATE_IDLE = 0xff,
+  RUN_STATE_WRITE = 0,
+  RUN_STATE_READ = 2,
 } RunState_t;
 
 static __IO RunState_t run_state = RUN_STATE_IDLE;
@@ -315,6 +315,7 @@ static void _init_button2() {
   gpio_pin_interrupt_configure(_BUTTON_2_PRT, _BUTTON_2_PIN,
                                GPIO_INT_EDGE_FALLING);
 }
+// 按键3，擦除flash
 static void work_irq3_handler(struct k_work *work) {
   int err = 0;
   if (!gpio_pin_get(_BUTTON_3_PRT, _BUTTON_3_PIN)) {
@@ -327,6 +328,7 @@ static void work_irq3_handler(struct k_work *work) {
       LED0_ON();
       err = flash_read(flash_dev, i * SPI_FLASH_SECTOR_SIZE, &the_rep,
                        sizeof(cs_de_report_t));
+      // 何谓擦除？全填充0xFF。因此这在无符号数中就是-1
       if (-1 == the_rep.index) {
         break;
       }
