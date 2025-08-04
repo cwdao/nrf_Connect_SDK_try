@@ -23,6 +23,9 @@
 #include <dk_buttons_and_leds.h>
 
 #include <zephyr/logging/log.h>
+
+#include "step_data_parse.h"
+
 LOG_MODULE_REGISTER(app_main, LOG_LEVEL_INF);
 
 #define CON_STATUS_LED DK_LED1
@@ -272,6 +275,7 @@ static void discovery_completed_cb(struct bt_gatt_dm *dm, void *context) {
 static void discovery_service_not_found_cb(struct bt_conn *conn,
                                            void *context) {
   LOG_INF("The service could not be found during the discovery, disconnecting");
+  // 这是用于断开连接的代码
   bt_conn_disconnect(connection, BT_HCI_ERR_REMOTE_USER_TERM_CONN);
 }
 
