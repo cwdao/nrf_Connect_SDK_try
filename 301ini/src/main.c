@@ -143,6 +143,8 @@ static void ranging_data_get_complete_cb(struct bt_conn *conn,
   net_buf_simple_reset(&latest_local_steps);
   net_buf_simple_reset(&latest_peer_steps);
   k_sem_give(&sem_local_steps);
+  // 存储原始数据
+//   store_cs_de_report(&cs_de_report);
   // 这是正儿八经算距离了
   cs_de_quality_t quality = cs_de_calc(&cs_de_report);
 

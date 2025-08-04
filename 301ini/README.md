@@ -7,3 +7,5 @@
 启用信道探测的安全性。
 设置测距参数并启动测距过程。
 在主循环中处理测距数据。
+
+需在ranging_data_get_complete_cb下对cs_de_populate_report重构，以自定义数据存储的方式。
