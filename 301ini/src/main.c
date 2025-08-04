@@ -135,14 +135,15 @@ static void ranging_data_get_complete_cb(struct bt_conn *conn,
 
   /* This struct is static to avoid putting it on the stack (it's very large) */
   static cs_de_report_t cs_de_report;
-
+  // 初始化和填充测距报告.从本地设备和远程设备的步骤数据缓冲区中提取原始数据，并将其存储到
+  // cs_de_report_t 数据结构中，供后续的测距计算和质量评估使用
   cs_de_populate_report(&latest_local_steps, &latest_peer_steps,
                         BT_CONN_LE_CS_ROLE_INITIATOR, &cs_de_report);
 
   net_buf_simple_reset(&latest_local_steps);
   net_buf_simple_reset(&latest_peer_steps);
   k_sem_give(&sem_local_steps);
-
+  // 这是正儿八经算距离了
   cs_de_quality_t quality = cs_de_calc(&cs_de_report);
 
   if (quality == CS_DE_QUALITY_OK) {
@@ -154,6 +155,7 @@ static void ranging_data_get_complete_cb(struct bt_conn *conn,
   }
 }
 
+// 每次测距子事件结束之后，得到了测距结果，会进入这个回调
 static void subevent_result_cb(struct bt_conn *conn,
                                struct bt_conn_le_cs_subevent_result *result) {
   if (dropped_ranging_counter == result->header.procedure_counter) {
@@ -241,6 +243,8 @@ static void mtu_exchange_cb(struct bt_conn *conn, uint8_t err,
   k_sem_give(&sem_mtu_exchange_done);
 }
 
+// 在回调中，完成对服务句柄的分配和初始化。
+// 使用信号量 sem_discovery_done 通知主线程服务发现成功。
 static void discovery_completed_cb(struct bt_gatt_dm *dm, void *context) {
   int err;
 
@@ -302,6 +306,8 @@ static bool le_param_req(struct bt_conn *conn, struct bt_le_conn_param *param) {
   return false;
 }
 
+// 连接成功回调函数。扫描到符合条件的设备后，程序会自动尝试连接。如果连接成功，保存连接对象到全局变量
+// connection，并通过信号量 sem_connected 通知主线程
 static void connected_cb(struct bt_conn *conn, uint8_t err) {
   char addr[BT_ADDR_LE_STR_LEN];
 
@@ -482,7 +488,8 @@ int main(void) {
     LOG_ERR("Scan init failed (err %d)", err);
     return 0;
   }
-
+  // 启动被动扫描（BT_SCAN_TYPE_SCAN_PASSIVE），不会发送扫描请求。
+  // 但扫描到之后会直接尝试连接，一旦成功则进入connected_cb,它会给一个成功信号量sem_connected
   err = bt_scan_start(BT_SCAN_TYPE_SCAN_PASSIVE);
   if (err) {
     LOG_ERR("Scanning failed to start (err %i)", err);
@@ -506,6 +513,8 @@ int main(void) {
 
   k_sem_take(&sem_mtu_exchange_done, K_FOREVER);
 
+  // （连接后）开始发现目标设备connection上的 GATT 服务。如果有ranging
+  // service，则进入discovery_completed_cb
   err = bt_gatt_dm_start(connection, BT_UUID_RANGING_SERVICE, &discovery_cb,
                          NULL);
   if (err) {
@@ -515,6 +524,11 @@ int main(void) {
 
   k_sem_take(&sem_discovery_done, K_FOREVER);
 
+  // 此时基本上进入更细致的信道探测功能的配置了，设备已经连接，服务成功发现。
+  // 设置默认的信道探测参数：
+  // enable_initiator_role = true：启用发起者角色。
+  // enable_reflector_role = false：禁用反射器角色。
+  // 其他参数包括天线选择、最大功率等。
   const struct bt_le_cs_set_default_settings_param default_settings = {
       .enable_initiator_role = true,
       .enable_reflector_role = false,
@@ -588,7 +602,7 @@ int main(void) {
   }
 
   k_sem_take(&sem_config_created, K_FOREVER);
-
+  // 启用信道探测的安全性
   err = bt_le_cs_security_enable(connection);
   if (err) {
     LOG_ERR("Failed to start CS Security (err %d)", err);
@@ -597,6 +611,7 @@ int main(void) {
 
   k_sem_take(&sem_cs_security_enabled, K_FOREVER);
 
+  // 测距参数：interval应该是最核心的一个。假设一个procedure是50ms，那么采样间隔就是间隔N个50ms
   const struct bt_le_cs_set_procedure_parameters_param procedure_params = {
       .config_id = CS_CONFIG_ID,
       .max_procedure_len = 1000,
@@ -624,7 +639,7 @@ int main(void) {
       .config_id = CS_CONFIG_ID,
       .enable = 1,
   };
-
+  // 使能信道探测，开始测距
   err = bt_le_cs_procedure_enable(connection, &params);
   if (err) {
     LOG_ERR("Failed to enable CS procedures (err %d)", err);
