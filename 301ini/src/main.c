@@ -19,16 +19,23 @@
 #include <zephyr/kernel.h>
 #include <zephyr/sys/reboot.h>
 #include <zephyr/types.h>
+#include <zephyr/drivers/gpio.h>
 
 #include <dk_buttons_and_leds.h>
 
 #include <zephyr/logging/log.h>
 
-#include "step_data_parse.h"
-#include "interface/button_led.h"
 #include "flash/flash_ops.h"
+#include "interface/button_led.h"
+#include "step_data_parse.h"
 
 LOG_MODULE_REGISTER(app_main, LOG_LEVEL_INF);
+
+// 定义每个按键的工作任务,中断现在只提交队列，不再执行具体复杂操作以提升系统实时性
+static struct k_work button0_work;
+static struct k_work button1_work;
+static struct k_work button2_work;
+static struct k_work button3_work;
 
 #define CON_STATUS_LED DK_LED1
 
@@ -149,7 +156,7 @@ static void ranging_data_get_complete_cb(struct bt_conn *conn,
   net_buf_simple_reset(&latest_peer_steps);
   k_sem_give(&sem_local_steps);
   // 存储原始数据
-//   store_cs_de_report(&cs_de_report);
+  //   store_cs_de_report(&cs_de_report);
   // 这是正儿八经算距离了
   cs_de_quality_t quality = cs_de_calc(&cs_de_report);
 
@@ -478,29 +485,54 @@ BT_CONN_CB_DEFINE(conn_cb) = {
     .le_cs_subevent_data_available = subevent_result_cb,
 };
 
-void button0_callback(void) {
-    LOG_INF("Button 0 pressed: Start writing to Flash");
-    // 启动写操作逻辑
-	led_on(0);
+// 工作队列任务处理函数
+static void button0_work_handler(struct k_work *work) {
+	if (!gpio_pin_get(BUTTON0_PORT, BUTTON0_PIN)) {  // 按键已释放
+        LOG_INF("Button 0 released (debounced)");
+        return;
+    }
+  LOG_INF("Button 0 pressed: Start writing to Flash");
+  led_on(0);
+//   flash_write_data(); // 假设有一个 flash 写入接口
 }
 
-void button1_callback(void) {
-    LOG_INF("Button 1 pressed: Stop operation");
-    // 停止操作逻辑
-	led_off(0);
+static void button1_work_handler(struct k_work *work) {
+	if (!gpio_pin_get(BUTTON1_PORT, BUTTON1_PIN)) {  // 按键已释放
+        LOG_INF("Button 1 released (debounced)");
+        return;
+    }
+  LOG_INF("Button 1 pressed: Stop operation");
+  led_off(0);
 }
 
-void button2_callback(void) {
-    LOG_INF("Button 2 pressed: Start reading from Flash");
-    // 启动读取操作逻辑
-	led_on(1);
+static void button2_work_handler(struct k_work *work) {
+	if (!gpio_pin_get(BUTTON2_PORT, BUTTON2_PIN)) {  // 按键已释放
+        LOG_INF("Button 2 released (debounced)");
+        return;
+    }
+  LOG_INF("Button 2 pressed: Start reading from Flash");
+  led_on(1);
+//   flash_read_data(); // 假设有一个 flash 读取接口
 }
 
-void button3_callback(void) {
-    LOG_INF("Button 3 pressed: Erase Flash");
-    // 启动擦除操作逻辑
-	led_off(1);
+static void button3_work_handler(struct k_work *work) {
+	if (!gpio_pin_get(BUTTON3_PORT, BUTTON3_PIN)) {  // 按键已释放
+        LOG_INF("Button 3 released (debounced)");
+        return;
+    }
+  LOG_INF("Button 3 pressed: Erase Flash");
+  led_off(1);
+//   flash_erase_data(); // 假设有一个 flash 擦除接口
 }
+
+// 按键回调函数
+void button0_callback(void) { k_work_submit(&button0_work); }
+
+void button1_callback(void) { k_work_submit(&button1_work); }
+
+void button2_callback(void) { k_work_submit(&button2_work); }
+
+void button3_callback(void) { k_work_submit(&button3_work); }
 
 int main(void) {
   int err;
@@ -509,6 +541,11 @@ int main(void) {
   button_led_init();
   // 初始化flash
   flash_init(flash_dev);
+  // 初始化工作队列任务
+  k_work_init(&button0_work, button0_work_handler);
+  k_work_init(&button1_work, button1_work_handler);
+  k_work_init(&button2_work, button2_work_handler);
+  k_work_init(&button3_work, button3_work_handler);
   // 注册按键回调
   button_register_callback(0, button0_callback);
   button_register_callback(1, button1_callback);

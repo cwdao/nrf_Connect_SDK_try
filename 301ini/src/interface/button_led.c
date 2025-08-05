@@ -19,22 +19,7 @@ LOG_MODULE_REGISTER(button_led, LOG_LEVEL_DBG);
 #define LED1_PIN DT_GPIO_PIN(DT_NODELABEL(led3), gpios)
 #define LED1_FLAGS DT_GPIO_FLAGS(DT_NODELABEL(led3), gpios)
 
-// 按键配置
-#define BUTTON0_PORT DEVICE_DT_GET(DT_GPIO_CTLR(DT_NODELABEL(button0), gpios))
-#define BUTTON0_PIN DT_GPIO_PIN(DT_NODELABEL(button0), gpios)
-#define BUTTON0_FLAGS DT_GPIO_FLAGS(DT_NODELABEL(button0), gpios)
 
-#define BUTTON1_PORT DEVICE_DT_GET(DT_GPIO_CTLR(DT_NODELABEL(button1), gpios))
-#define BUTTON1_PIN DT_GPIO_PIN(DT_NODELABEL(button1), gpios)
-#define BUTTON1_FLAGS DT_GPIO_FLAGS(DT_NODELABEL(button1), gpios)
-
-#define BUTTON2_PORT DEVICE_DT_GET(DT_GPIO_CTLR(DT_NODELABEL(button2), gpios))
-#define BUTTON2_PIN DT_GPIO_PIN(DT_NODELABEL(button2), gpios)
-#define BUTTON2_FLAGS DT_GPIO_FLAGS(DT_NODELABEL(button2), gpios)
-
-#define BUTTON3_PORT DEVICE_DT_GET(DT_GPIO_CTLR(DT_NODELABEL(button3), gpios))
-#define BUTTON3_PIN DT_GPIO_PIN(DT_NODELABEL(button3), gpios)
-#define BUTTON3_FLAGS DT_GPIO_FLAGS(DT_NODELABEL(button3), gpios)
 
 // LED 初始化
 static const struct device *led_ports[LED_COUNT] = {LED0_PORT, LED1_PORT};
@@ -61,6 +46,33 @@ static void button_irq_handler(const struct device *port,
     if (cb == &button_callbacks[i] && button_handlers[i]) {
       button_handlers[i](); // 调用注册的回调函数
     }
+  }
+}
+
+// 注册按键回调
+void button_register_callback(uint8_t button_id, button_callback_t callback) {
+  if (button_id < BUTTON_COUNT) {
+    button_handlers[button_id] = callback;
+  }
+}
+
+// 控制 LED
+void led_on(uint8_t led_id) {
+  if (led_id < LED_COUNT) {
+    gpio_pin_set_raw(led_ports[led_id], led_pins[led_id], 1);
+  }
+}
+
+void led_off(uint8_t led_id) {
+  if (led_id < LED_COUNT) {
+    gpio_pin_set_raw(led_ports[led_id], led_pins[led_id], 0);
+  }
+}
+
+void led_toggle(uint8_t led_id) {
+  if (led_id < LED_COUNT) {
+    int state = gpio_pin_get_raw(led_ports[led_id], led_pins[led_id]);
+    gpio_pin_set_raw(led_ports[led_id], led_pins[led_id], !state);
   }
 }
 
@@ -102,31 +114,4 @@ void button_led_init(void) {
       LOG_ERR("Failed to configure interrupt for button %d", i);
     }
   }
-}
-
-// 注册按键回调
-void button_register_callback(uint8_t button_id, button_callback_t callback) {
-    if (button_id < BUTTON_COUNT) {
-        button_handlers[button_id] = callback;
-    }
-}
-
-// 控制 LED
-void led_on(uint8_t led_id) {
-    if (led_id < LED_COUNT) {
-        gpio_pin_set_raw(led_ports[led_id], led_pins[led_id], 1);
-    }
-}
-
-void led_off(uint8_t led_id) {
-    if (led_id < LED_COUNT) {
-        gpio_pin_set_raw(led_ports[led_id], led_pins[led_id], 0);
-    }
-}
-
-void led_toggle(uint8_t led_id) {
-    if (led_id < LED_COUNT) {
-        int state = gpio_pin_get_raw(led_ports[led_id], led_pins[led_id]);
-        gpio_pin_set_raw(led_ports[led_id], led_pins[led_id], !state);
-    }
 }
