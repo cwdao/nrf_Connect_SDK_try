@@ -25,6 +25,8 @@
 #include <zephyr/logging/log.h>
 
 #include "step_data_parse.h"
+#include "interface/button_led.h"
+#include "flash/flash_ops.h"
 
 LOG_MODULE_REGISTER(app_main, LOG_LEVEL_INF);
 
@@ -476,8 +478,42 @@ BT_CONN_CB_DEFINE(conn_cb) = {
     .le_cs_subevent_data_available = subevent_result_cb,
 };
 
+void button0_callback(void) {
+    LOG_INF("Button 0 pressed: Start writing to Flash");
+    // 启动写操作逻辑
+	led_on(0);
+}
+
+void button1_callback(void) {
+    LOG_INF("Button 1 pressed: Stop operation");
+    // 停止操作逻辑
+	led_off(0);
+}
+
+void button2_callback(void) {
+    LOG_INF("Button 2 pressed: Start reading from Flash");
+    // 启动读取操作逻辑
+	led_on(1);
+}
+
+void button3_callback(void) {
+    LOG_INF("Button 3 pressed: Erase Flash");
+    // 启动擦除操作逻辑
+	led_off(1);
+}
+
 int main(void) {
   int err;
+
+  //   初始化按键和LED
+  button_led_init();
+  // 初始化flash
+  flash_init(flash_dev);
+  // 注册按键回调
+  button_register_callback(0, button0_callback);
+  button_register_callback(1, button1_callback);
+  button_register_callback(2, button2_callback);
+  button_register_callback(3, button3_callback);
 
   LOG_INF("Starting Channel Sounding Initiator Sample");
 
