@@ -43,7 +43,9 @@ enum bt_cs_state_t {
   BT_CS_STATE_IDLE,     // 蓝牙CS空闲状态
   BT_CS_STATE_SCANNING, // 蓝牙CS正在扫描
   BT_CS_STATE_ENABLED,  // 蓝牙CS已启用
-  BT_CS_STATE_DISABLED  // 蓝牙CS已禁用
+  BT_CS_STATE_DISABLED, // 蓝牙CS已禁用
+  BT_CS_STATE_DISABLED_AND_UPLOADING, // 蓝牙CS已禁用且正在上传
+  BT_CS_STATE_DATA_ERASING // 蓝牙CS已禁用且正在擦除
 };
 
 static enum bt_cs_state_t bt_cs_state = BT_CS_STATE_IDLE; // 初始化为空闲状态
@@ -565,9 +567,11 @@ static void button0_work_handler(struct k_work *work) {
   params.enable = 1;
   bt_le_cs_procedure_enable(connection, &params);
   LOG_INF("Button 0 pressed: Start CS procedures");
+  // 开启CS指示灯，同时这也意味着正在写入flash
+  led_on(0);
   bt_cs_state = BT_CS_STATE_ENABLED; // 更新CS状态为已启用
 }
-
+// 按键1负责停止测距流程
 static void button1_work_handler(struct k_work *work) {
   if (!gpio_pin_get(BUTTON1_PORT, BUTTON1_PIN)) { // 按键已释放
     LOG_INF("Button 1 released (debounced)");
@@ -577,26 +581,47 @@ static void button1_work_handler(struct k_work *work) {
   bt_le_cs_procedure_enable(connection, &params);
   LOG_INF("Button 1 pressed: Disable CS procedures");
   bt_cs_state = BT_CS_STATE_DISABLED; // 更新CS状态为已禁用
+  // 关闭CS指示灯
   led_off(0);
 }
-
+// 按键2负责读取flash已存储的内容，且首先保证如果没停则不操作
 static void button2_work_handler(struct k_work *work) {
   if (!gpio_pin_get(BUTTON2_PORT, BUTTON2_PIN)) { // 按键已释放
     LOG_INF("Button 2 released (debounced)");
     return;
   }
+  // 如果测距流程正在运行，则不读取flash
+  if (bt_cs_state == BT_CS_STATE_ENABLED) {
+    LOG_INF("CS procedures are enabled, cannot read from Flash");
+    return;
+  }
   LOG_INF("Button 2 pressed: Start reading from Flash");
+  // 开启FLASH上传指示灯
   led_on(1);
+  // 更新CS状态为已禁用且正在上传
+  bt_cs_state = BT_CS_STATE_DISABLED_AND_UPLOADING;
   //   flash_read_data(); // 假设有一个 flash 读取接口
+
 }
 
+// 按键3负责在上传后擦除数据，保证后续使用。无论是正在CS测距或正在上传时都不应该起效
 static void button3_work_handler(struct k_work *work) {
   if (!gpio_pin_get(BUTTON3_PORT, BUTTON3_PIN)) { // 按键已释放
     LOG_INF("Button 3 released (debounced)");
     return;
   }
+  if (bt_cs_state == BT_CS_STATE_DISABLED_AND_UPLOADING) {
+    LOG_INF("CS procedures are disabled and uploading, cannot erase Flash");
+    return;
+  }
+  if (bt_cs_state == BT_CS_STATE_ENABLED) {
+    LOG_INF("CS procedures are enabled, cannot erase Flash");
+    return;
+  }
   LOG_INF("Button 3 pressed: Erase Flash");
+  // 关闭FLASH上传指示灯
   led_off(1);
+  bt_cs_state = BT_CS_STATE_DATA_ERASING;
   //   flash_erase_data(); // 假设有一个 flash 擦除接口
 }
 
