@@ -19,6 +19,7 @@
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/kernel.h>
 #include <zephyr/sys/reboot.h>
+#include <zephyr/sys_clock.h>
 #include <zephyr/types.h>
 
 #include <dk_buttons_and_leds.h>
@@ -133,7 +134,7 @@ static const struct bt_le_cs_set_procedure_parameters_param procedure_params = {
     .config_id = CS_CONFIG_ID,
     .max_procedure_len = 1000,
     .min_procedure_interval = 1,
-    .max_procedure_interval = 5,
+    .max_procedure_interval = 2,
     .max_procedure_count = 0,
     .min_subevent_len = 10000,
     .max_subevent_len = 60000,
@@ -218,6 +219,10 @@ static void ranging_data_get_complete_cb(struct bt_conn *conn,
                                          uint16_t ranging_counter, int err) {
   ARG_UNUSED(conn);
 
+  uint32_t start_cycles, end_cycles, elapsed_cycles;
+  uint64_t elapsed_ns;
+  // 获取开始的时钟周期
+  start_cycles = k_cycle_get_32();
   if (err) {
     LOG_ERR("Error when getting ranging data with ranging counter %d (err %d)",
             ranging_counter, err);
@@ -246,24 +251,36 @@ static void ranging_data_get_complete_cb(struct bt_conn *conn,
       }
     }
   }
-  // if (flash_state == FLASH_STATE_IDLE) {
-  //   // 存入flash
-  //   flash_state = FLASH_STATE_DATA_WRITING;
-  //   static store_cs_de_report_t store_cs_de_report;
-  //   store_cs_de_report.report_index = flash_ops_get_index();
-  //   store_cs_de_report.timestamp_ms = k_uptime_get();
-  //   // store_cs_de_report.report = cs_de_report;
-  //   memcpy(&store_cs_de_report.report, &cs_de_report, sizeof(cs_de_report_t));
-  //   err = flash_write_data(flash_dev, store_cs_de_report.report_index,
-  //                          &store_cs_de_report, sizeof(store_cs_de_report));
-  //   if (0 != err) {
-  //     LOG_ERR("Flash write error: %d", err);
-  //     flash_state = FLASH_STATE_IDLE;
-  //     return;
-  //   }
-  //   flash_ops_increment_index();
-  //   flash_state = FLASH_STATE_IDLE;
-  // }
+  if (flash_state == FLASH_STATE_IDLE) {
+    // 存入flash
+    flash_state = FLASH_STATE_DATA_WRITING;
+    static store_cs_de_report_t store_cs_de_report;
+    store_cs_de_report.report_index = flash_ops_get_index();
+    store_cs_de_report.timestamp_ms = k_uptime_get();
+    // store_cs_de_report.report = cs_de_report;
+    memcpy(&store_cs_de_report.report, &cs_de_report,
+    sizeof(cs_de_report_t)); err = flash_write_data(flash_dev,
+    store_cs_de_report.report_index,
+                           &store_cs_de_report, sizeof(store_cs_de_report));
+    if (0 != err) {
+      LOG_ERR("Flash write error: %d", err);
+      flash_state = FLASH_STATE_IDLE;
+      return;
+    }
+    flash_ops_increment_index();
+    flash_state = FLASH_STATE_IDLE;
+  }
+
+  // 获取结束的时钟周期
+  end_cycles = k_cycle_get_32();
+
+  // 计算消耗的周期数
+  elapsed_cycles = end_cycles - start_cycles;
+
+  // 将周期转换为纳秒
+  elapsed_ns = k_cyc_to_ns_floor64(elapsed_cycles);
+
+  printk("Callback execution time: %llu ns\n", elapsed_ns);
 }
 
 // 每次测距子事件结束之后，得到了测距结果，会进入这个回调
