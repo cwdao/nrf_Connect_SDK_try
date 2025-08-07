@@ -37,7 +37,16 @@ static struct k_work button1_work;
 static struct k_work button2_work;
 static struct k_work button3_work;
 // 指示蓝牙连接状态
-static bool bt_is_connected = false;
+// static bool bt_is_connected = false;
+
+enum bt_cs_state_t {
+  BT_CS_STATE_IDLE,     // 蓝牙CS空闲状态
+  BT_CS_STATE_SCANNING, // 蓝牙CS正在扫描
+  BT_CS_STATE_ENABLED,  // 蓝牙CS已启用
+  BT_CS_STATE_DISABLED  // 蓝牙CS已禁用
+};
+
+static enum bt_cs_state_t bt_cs_state = BT_CS_STATE_IDLE; // 初始化为空闲状态
 
 #define CON_STATUS_LED DK_LED1
 
@@ -72,6 +81,59 @@ static uint8_t buffer_index;
 static uint8_t buffer_num_valid;
 static cs_de_dist_estimates_t distance_estimate_buffer[MAX_AP]
                                                       [DE_SLIDING_WINDOW_SIZE];
+
+// 此时基本上进入更细致的信道探测功能的配置了，设备已经连接，服务成功发现。
+// 设置默认的信道探测参数：
+// enable_initiator_role = true：启用发起者角色。
+// enable_reflector_role = false：禁用反射器角色。
+// 其他参数包括天线选择、最大功率等。传给bt_le_cs_set_default_settings
+static const struct bt_le_cs_set_default_settings_param default_settings = {
+    .enable_initiator_role = true,
+    .enable_reflector_role = false,
+    .cs_sync_antenna_selection = BT_LE_CS_ANTENNA_SELECTION_OPT_REPETITIVE,
+    .max_tx_power = BT_HCI_OP_LE_CS_MAX_MAX_TX_POWER,
+};
+
+// 创建CS配置参数，步骤类型，信道选择等等。传给bt_le_cs_create_config
+static struct bt_le_cs_create_config_params config_params = {
+    .id = CS_CONFIG_ID,
+    .main_mode_type = BT_CONN_LE_CS_MAIN_MODE_2,
+    .sub_mode_type = BT_CONN_LE_CS_SUB_MODE_1,
+    .min_main_mode_steps = 2,
+    .max_main_mode_steps = 5,
+    .main_mode_repetition = 0,
+    .mode_0_steps = NUM_MODE_0_STEPS,
+    .role = BT_CONN_LE_CS_ROLE_INITIATOR,
+    .rtt_type = BT_CONN_LE_CS_RTT_TYPE_AA_ONLY,
+    .cs_sync_phy = BT_CONN_LE_CS_SYNC_1M_PHY,
+    .channel_map_repetition = 3,
+    .channel_selection_type = BT_CONN_LE_CS_CHSEL_TYPE_3B,
+    .ch3c_shape = BT_CONN_LE_CS_CH3C_SHAPE_HAT,
+    .ch3c_jump = 2,
+};
+
+// 测距参数：interval应该是最核心的一个。假设一个procedure是50ms，那么采样间隔就是间隔N个50ms
+static const struct bt_le_cs_set_procedure_parameters_param procedure_params = {
+    .config_id = CS_CONFIG_ID,
+    .max_procedure_len = 1000,
+    .min_procedure_interval = 10,
+    .max_procedure_interval = 10,
+    .max_procedure_count = 0,
+    .min_subevent_len = 60000,
+    .max_subevent_len = 60000,
+    .tone_antenna_config_selection = BT_LE_CS_TONE_ANTENNA_CONFIGURATION_A1_B1,
+    .phy = BT_LE_CS_PROCEDURE_PHY_1M,
+    .tx_power_delta = 0x80,
+    .preferred_peer_antenna = BT_LE_CS_PROCEDURE_PREFERRED_PEER_ANTENNA_1,
+    .snr_control_initiator = BT_LE_CS_SNR_CONTROL_NOT_USED,
+    .snr_control_reflector = BT_LE_CS_SNR_CONTROL_NOT_USED,
+};
+
+// 启用测距参数，传给bt_le_cs_procedure_enable
+static struct bt_le_cs_procedure_enable_param params = {
+    .config_id = CS_CONFIG_ID,
+    .enable = 1,
+};
 
 static void store_distance_estimates(cs_de_report_t *p_report) {
   int lock_state = k_mutex_lock(&distance_estimate_buffer_mutex, K_FOREVER);
@@ -334,11 +396,15 @@ static void connected_cb(struct bt_conn *conn, uint8_t err) {
   if (err) {
     bt_conn_unref(conn);
     connection = NULL;
+    return;
   }
 
   connection = bt_conn_ref(conn);
 
   k_sem_give(&sem_connected);
+  LOG_INF("sem_connected count after conncb: %d",
+          k_sem_count_get(&sem_connected));
+  LOG_INF("Now connected, scanning stopped");
 
   dk_set_led_on(CON_STATUS_LED);
 }
@@ -351,15 +417,9 @@ static void disconnected_cb(struct bt_conn *conn, uint8_t reason) {
     bt_conn_unref(connection);
     connection = NULL;
   }
-  //   bt_conn_unref(conn);
-  //   connection = NULL;
   // 更新 LED 状态，指示蓝牙已断开
-  dk_set_led_off(CON_STATUS_LED);
-  // 可选：在断开后执行其他清理操作，例如释放信号量
-  k_sem_reset(&sem_connected);
-  k_sem_reset(&sem_security);
-  // 冷重启就不好控制了
-  //   sys_reboot(SYS_REBOOT_COLD);
+  dk_set_led_off(CON_STATUS_LED); // 关闭连接状态指示灯
+
 }
 
 static void remote_capabilities_cb(struct bt_conn *conn, uint8_t status,
@@ -502,186 +562,10 @@ static void button0_work_handler(struct k_work *work) {
     LOG_INF("Button 0 released (debounced)");
     return;
   }
-  if (bt_is_connected) {
-    LOG_INF("Bluetooth already connected. Ignoring button 0 press.");
-    return;
-  }
-  LOG_INF("Button 0 pressed: Start writing to Flash");
-  led_on(0);
-  //   flash_write_data(); // 假设有一个 flash 写入接口
-  //   蓝牙连接流程
-  int err;
-  // 初始化蓝牙子系统，这个一共只需要执行一次，不能重复执行
-//   err = bt_enable(NULL);
-//   if (err) {
-//     LOG_ERR("Bluetooth init failed (err %d)", err);
-//     led_off(0);
-//     return;
-//   }
-
-  // 蓝牙扫描与链接，添加一个过滤器，只关注有ranging service 的设备
-//   err = scan_init();
-//   if (err) {
-//     LOG_ERR("Scan init failed (err %d)", err);
-//     return;
-//   }
-  // 启动被动扫描（BT_SCAN_TYPE_SCAN_PASSIVE），不会发送扫描请求。
-  // 但扫描到之后会直接尝试连接，一旦成功则进入connected_cb,它会给一个成功信号量sem_connected
-  err = bt_scan_start(BT_SCAN_TYPE_SCAN_PASSIVE);
-  if (err) {
-    LOG_ERR("Scanning failed to start (err %i)", err);
-    return;
-  }
-  k_sem_take(&sem_connected, K_FOREVER);
-
-  err = bt_conn_set_security(connection, BT_SECURITY_L2);
-  if (err) {
-    LOG_ERR("Failed to encrypt connection (err %d)", err);
-    return;
-  }
-
-  k_sem_take(&sem_security, K_FOREVER);
-
-  static struct bt_gatt_exchange_params mtu_exchange_params = {
-      .func = mtu_exchange_cb};
-
-  bt_gatt_exchange_mtu(connection, &mtu_exchange_params);
-
-  k_sem_take(&sem_mtu_exchange_done, K_FOREVER);
-
-  // （连接后）开始发现目标设备connection上的 GATT 服务。如果有ranging
-  // service，则进入discovery_completed_cb
-  err = bt_gatt_dm_start(connection, BT_UUID_RANGING_SERVICE, &discovery_cb,
-                         NULL);
-  if (err) {
-    LOG_ERR("Discovery failed (err %d)", err);
-    return;
-  }
-
-  k_sem_take(&sem_discovery_done, K_FOREVER);
-
-  // 此时基本上进入更细致的信道探测功能的配置了，设备已经连接，服务成功发现。
-  // 设置默认的信道探测参数：
-  // enable_initiator_role = true：启用发起者角色。
-  // enable_reflector_role = false：禁用反射器角色。
-  // 其他参数包括天线选择、最大功率等。
-  const struct bt_le_cs_set_default_settings_param default_settings = {
-      .enable_initiator_role = true,
-      .enable_reflector_role = false,
-      .cs_sync_antenna_selection = BT_LE_CS_ANTENNA_SELECTION_OPT_REPETITIVE,
-      .max_tx_power = BT_HCI_OP_LE_CS_MAX_MAX_TX_POWER,
-  };
-
-  err = bt_le_cs_set_default_settings(connection, &default_settings);
-  if (err) {
-    LOG_ERR("Failed to configure default CS settings (err %d)", err);
-    return;
-  }
-
-  err = bt_ras_rreq_rd_overwritten_subscribe(connection,
-                                             ranging_data_overwritten_cb);
-  if (err) {
-    LOG_ERR("RAS RREQ ranging data overwritten subscribe failed (err %d)", err);
-    return;
-  }
-
-  err = bt_ras_rreq_rd_ready_subscribe(connection, ranging_data_ready_cb);
-  if (err) {
-    LOG_ERR("RAS RREQ ranging data ready subscribe failed (err %d)", err);
-    return;
-  }
-
-  err = bt_ras_rreq_on_demand_rd_subscribe(connection);
-  if (err) {
-    LOG_ERR("RAS RREQ On-demand ranging data subscribe failed (err %d)", err);
-    return;
-  }
-
-  err = bt_ras_rreq_cp_subscribe(connection);
-  if (err) {
-    LOG_ERR("RAS RREQ CP subscribe failed (err %d)", err);
-    return;
-  }
-
-  err = bt_le_cs_read_remote_supported_capabilities(connection);
-  if (err) {
-    LOG_ERR("Failed to exchange CS capabilities (err %d)", err);
-    return;
-  }
-
-  k_sem_take(&sem_remote_capabilities_obtained, K_FOREVER);
-
-  struct bt_le_cs_create_config_params config_params = {
-      .id = CS_CONFIG_ID,
-      .main_mode_type = BT_CONN_LE_CS_MAIN_MODE_2,
-      .sub_mode_type = BT_CONN_LE_CS_SUB_MODE_1,
-      .min_main_mode_steps = 2,
-      .max_main_mode_steps = 5,
-      .main_mode_repetition = 0,
-      .mode_0_steps = NUM_MODE_0_STEPS,
-      .role = BT_CONN_LE_CS_ROLE_INITIATOR,
-      .rtt_type = BT_CONN_LE_CS_RTT_TYPE_AA_ONLY,
-      .cs_sync_phy = BT_CONN_LE_CS_SYNC_1M_PHY,
-      .channel_map_repetition = 3,
-      .channel_selection_type = BT_CONN_LE_CS_CHSEL_TYPE_3B,
-      .ch3c_shape = BT_CONN_LE_CS_CH3C_SHAPE_HAT,
-      .ch3c_jump = 2,
-  };
-
-  bt_le_cs_set_valid_chmap_bits(config_params.channel_map);
-
-  err = bt_le_cs_create_config(connection, &config_params,
-                               BT_LE_CS_CREATE_CONFIG_CONTEXT_LOCAL_AND_REMOTE);
-  if (err) {
-    LOG_ERR("Failed to create CS config (err %d)", err);
-    return;
-  }
-
-  k_sem_take(&sem_config_created, K_FOREVER);
-  // 启用信道探测的安全性
-  err = bt_le_cs_security_enable(connection);
-  if (err) {
-    LOG_ERR("Failed to start CS Security (err %d)", err);
-    return;
-  }
-
-  k_sem_take(&sem_cs_security_enabled, K_FOREVER);
-
-  // 测距参数：interval应该是最核心的一个。假设一个procedure是50ms，那么采样间隔就是间隔N个50ms
-  const struct bt_le_cs_set_procedure_parameters_param procedure_params = {
-      .config_id = CS_CONFIG_ID,
-      .max_procedure_len = 1000,
-      .min_procedure_interval = 10,
-      .max_procedure_interval = 10,
-      .max_procedure_count = 0,
-      .min_subevent_len = 60000,
-      .max_subevent_len = 60000,
-      .tone_antenna_config_selection =
-          BT_LE_CS_TONE_ANTENNA_CONFIGURATION_A1_B1,
-      .phy = BT_LE_CS_PROCEDURE_PHY_1M,
-      .tx_power_delta = 0x80,
-      .preferred_peer_antenna = BT_LE_CS_PROCEDURE_PREFERRED_PEER_ANTENNA_1,
-      .snr_control_initiator = BT_LE_CS_SNR_CONTROL_NOT_USED,
-      .snr_control_reflector = BT_LE_CS_SNR_CONTROL_NOT_USED,
-  };
-
-  err = bt_le_cs_set_procedure_parameters(connection, &procedure_params);
-  if (err) {
-    LOG_ERR("Failed to set procedure parameters (err %d)", err);
-    return;
-  }
-
-  struct bt_le_cs_procedure_enable_param params = {
-      .config_id = CS_CONFIG_ID,
-      .enable = 1,
-  };
-  // 使能信道探测，开始测距
-  err = bt_le_cs_procedure_enable(connection, &params);
-  if (err) {
-    LOG_ERR("Failed to enable CS procedures (err %d)", err);
-    return;
-  }
-  bt_is_connected = true; // 更新连接状态
+  params.enable = 1;
+  bt_le_cs_procedure_enable(connection, &params);
+  LOG_INF("Button 0 pressed: Start CS procedures");
+  bt_cs_state = BT_CS_STATE_ENABLED; // 更新CS状态为已启用
 }
 
 static void button1_work_handler(struct k_work *work) {
@@ -689,27 +573,11 @@ static void button1_work_handler(struct k_work *work) {
     LOG_INF("Button 1 released (debounced)");
     return;
   }
-  LOG_INF("Button 1 pressed: Stop operation");
+  params.enable = 0;
+  bt_le_cs_procedure_enable(connection, &params);
+  LOG_INF("Button 1 pressed: Disable CS procedures");
+  bt_cs_state = BT_CS_STATE_DISABLED; // 更新CS状态为已禁用
   led_off(0);
-
-  // 断开蓝牙连接
-  if (connection) {
-    bt_conn_disconnect(connection, BT_HCI_ERR_REMOTE_USER_TERM_CONN);
-    bt_conn_unref(connection);
-    connection = NULL;
-  }
-  bt_is_connected = false; // 更新连接状态
-                           // 重置所有信号量
-  k_sem_reset(&sem_connected);
-  k_sem_reset(&sem_security);
-  k_sem_reset(&sem_mtu_exchange_done);
-  k_sem_reset(&sem_discovery_done);
-  k_sem_reset(&sem_remote_capabilities_obtained);
-  k_sem_reset(&sem_config_created);
-  k_sem_reset(&sem_cs_security_enabled);
-  k_sem_reset(&sem_local_steps);
-
-  LOG_INF("Bluetooth disconnected. System ready for reconnection.");
 }
 
 static void button2_work_handler(struct k_work *work) {
@@ -781,7 +649,10 @@ int main(void) {
     LOG_ERR("Scanning failed to start (err %i)", err);
     return 0;
   }
+  LOG_INF("Scanning started");
+  bt_cs_state = BT_CS_STATE_SCANNING;
 
+  LOG_INF("sem_connected count: %d", k_sem_count_get(&sem_connected));
   k_sem_take(&sem_connected, K_FOREVER);
 
   err = bt_conn_set_security(connection, BT_SECURITY_L2);
@@ -815,12 +686,12 @@ int main(void) {
   // enable_initiator_role = true：启用发起者角色。
   // enable_reflector_role = false：禁用反射器角色。
   // 其他参数包括天线选择、最大功率等。
-  const struct bt_le_cs_set_default_settings_param default_settings = {
-      .enable_initiator_role = true,
-      .enable_reflector_role = false,
-      .cs_sync_antenna_selection = BT_LE_CS_ANTENNA_SELECTION_OPT_REPETITIVE,
-      .max_tx_power = BT_HCI_OP_LE_CS_MAX_MAX_TX_POWER,
-  };
+  // const struct bt_le_cs_set_default_settings_param default_settings = {
+  //     .enable_initiator_role = true,
+  //     .enable_reflector_role = false,
+  //     .cs_sync_antenna_selection = BT_LE_CS_ANTENNA_SELECTION_OPT_REPETITIVE,
+  //     .max_tx_power = BT_HCI_OP_LE_CS_MAX_MAX_TX_POWER,
+  // };
 
   err = bt_le_cs_set_default_settings(connection, &default_settings);
   if (err) {
@@ -861,22 +732,22 @@ int main(void) {
 
   k_sem_take(&sem_remote_capabilities_obtained, K_FOREVER);
 
-  struct bt_le_cs_create_config_params config_params = {
-      .id = CS_CONFIG_ID,
-      .main_mode_type = BT_CONN_LE_CS_MAIN_MODE_2,
-      .sub_mode_type = BT_CONN_LE_CS_SUB_MODE_1,
-      .min_main_mode_steps = 2,
-      .max_main_mode_steps = 5,
-      .main_mode_repetition = 0,
-      .mode_0_steps = NUM_MODE_0_STEPS,
-      .role = BT_CONN_LE_CS_ROLE_INITIATOR,
-      .rtt_type = BT_CONN_LE_CS_RTT_TYPE_AA_ONLY,
-      .cs_sync_phy = BT_CONN_LE_CS_SYNC_1M_PHY,
-      .channel_map_repetition = 3,
-      .channel_selection_type = BT_CONN_LE_CS_CHSEL_TYPE_3B,
-      .ch3c_shape = BT_CONN_LE_CS_CH3C_SHAPE_HAT,
-      .ch3c_jump = 2,
-  };
+  // struct bt_le_cs_create_config_params config_params = {
+  //     .id = CS_CONFIG_ID,
+  //     .main_mode_type = BT_CONN_LE_CS_MAIN_MODE_2,
+  //     .sub_mode_type = BT_CONN_LE_CS_SUB_MODE_1,
+  //     .min_main_mode_steps = 2,
+  //     .max_main_mode_steps = 5,
+  //     .main_mode_repetition = 0,
+  //     .mode_0_steps = NUM_MODE_0_STEPS,
+  //     .role = BT_CONN_LE_CS_ROLE_INITIATOR,
+  //     .rtt_type = BT_CONN_LE_CS_RTT_TYPE_AA_ONLY,
+  //     .cs_sync_phy = BT_CONN_LE_CS_SYNC_1M_PHY,
+  //     .channel_map_repetition = 3,
+  //     .channel_selection_type = BT_CONN_LE_CS_CHSEL_TYPE_3B,
+  //     .ch3c_shape = BT_CONN_LE_CS_CH3C_SHAPE_HAT,
+  //     .ch3c_jump = 2,
+  // };
 
   bt_le_cs_set_valid_chmap_bits(config_params.channel_map);
 
@@ -894,26 +765,25 @@ int main(void) {
     LOG_ERR("Failed to start CS Security (err %d)", err);
     return 0;
   }
-
   k_sem_take(&sem_cs_security_enabled, K_FOREVER);
 
   // 测距参数：interval应该是最核心的一个。假设一个procedure是50ms，那么采样间隔就是间隔N个50ms
-  const struct bt_le_cs_set_procedure_parameters_param procedure_params = {
-      .config_id = CS_CONFIG_ID,
-      .max_procedure_len = 1000,
-      .min_procedure_interval = 10,
-      .max_procedure_interval = 10,
-      .max_procedure_count = 0,
-      .min_subevent_len = 60000,
-      .max_subevent_len = 60000,
-      .tone_antenna_config_selection =
-          BT_LE_CS_TONE_ANTENNA_CONFIGURATION_A1_B1,
-      .phy = BT_LE_CS_PROCEDURE_PHY_1M,
-      .tx_power_delta = 0x80,
-      .preferred_peer_antenna = BT_LE_CS_PROCEDURE_PREFERRED_PEER_ANTENNA_1,
-      .snr_control_initiator = BT_LE_CS_SNR_CONTROL_NOT_USED,
-      .snr_control_reflector = BT_LE_CS_SNR_CONTROL_NOT_USED,
-  };
+  // const struct bt_le_cs_set_procedure_parameters_param procedure_params = {
+  //     .config_id = CS_CONFIG_ID,
+  //     .max_procedure_len = 1000,
+  //     .min_procedure_interval = 10,
+  //     .max_procedure_interval = 10,
+  //     .max_procedure_count = 0,
+  //     .min_subevent_len = 60000,
+  //     .max_subevent_len = 60000,
+  //     .tone_antenna_config_selection =
+  //         BT_LE_CS_TONE_ANTENNA_CONFIGURATION_A1_B1,
+  //     .phy = BT_LE_CS_PROCEDURE_PHY_1M,
+  //     .tx_power_delta = 0x80,
+  //     .preferred_peer_antenna = BT_LE_CS_PROCEDURE_PREFERRED_PEER_ANTENNA_1,
+  //     .snr_control_initiator = BT_LE_CS_SNR_CONTROL_NOT_USED,
+  //     .snr_control_reflector = BT_LE_CS_SNR_CONTROL_NOT_USED,
+  // };
 
   err = bt_le_cs_set_procedure_parameters(connection, &procedure_params);
   if (err) {
@@ -921,23 +791,23 @@ int main(void) {
     return 0;
   }
 
-  struct bt_le_cs_procedure_enable_param params = {
-      .config_id = CS_CONFIG_ID,
-      .enable = 1,
-  };
+  // struct bt_le_cs_procedure_enable_param params = {
+  //     .config_id = CS_CONFIG_ID,
+  //     .enable = 1,
+  // };
   // 使能信道探测，开始测距
   err = bt_le_cs_procedure_enable(connection, &params);
   if (err) {
     LOG_ERR("Failed to enable CS procedures (err %d)", err);
     return 0;
   }
-//   这是第一次连接
-  bt_is_connected = true;
+  //   这是第一次连接
+  bt_cs_state = BT_CS_STATE_ENABLED;
 
   while (true) {
     k_sleep(K_MSEC(1000));
 
-    if (buffer_num_valid != 0 && bt_is_connected) {
+    if (buffer_num_valid != 0 && bt_cs_state == BT_CS_STATE_ENABLED) {
       for (uint8_t ap = 0; ap < MAX_AP; ap++) {
         cs_de_dist_estimates_t distance_on_ap = get_distance(ap);
 
@@ -947,7 +817,9 @@ int main(void) {
                 (double)distance_on_ap.phase_slope, (double)distance_on_ap.rtt);
       }
     }
-
+    if (bt_cs_state == BT_CS_STATE_ENABLED) {
+      LOG_INF("Connected, sleeping for a few seconds...");
+    }
     LOG_INF("Sleeping for a few seconds...");
   }
 
