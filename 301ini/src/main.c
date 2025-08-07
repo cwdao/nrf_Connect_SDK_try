@@ -25,9 +25,9 @@
 
 #include <zephyr/logging/log.h>
 
+#include "cs_de_data_parse.h"
 #include "flash/flash_ops.h"
 #include "interface/button_led.h"
-#include "step_data_parse.h"
 
 LOG_MODULE_REGISTER(app_main, LOG_LEVEL_INF);
 
@@ -40,15 +40,29 @@ static struct k_work button3_work;
 // static bool bt_is_connected = false;
 
 enum bt_cs_state_t {
-  BT_CS_STATE_IDLE,     // 蓝牙CS空闲状态
-  BT_CS_STATE_SCANNING, // 蓝牙CS正在扫描
-  BT_CS_STATE_ENABLED,  // 蓝牙CS已启用
-  BT_CS_STATE_DISABLED, // 蓝牙CS已禁用
+  BT_CS_STATE_IDLE,                   // 蓝牙CS空闲状态
+  BT_CS_STATE_SCANNING,               // 蓝牙CS正在扫描
+  BT_CS_STATE_ENABLED,                // 蓝牙CS已启用
+  BT_CS_STATE_DISABLED,               // 蓝牙CS已禁用
   BT_CS_STATE_DISABLED_AND_UPLOADING, // 蓝牙CS已禁用且正在上传
-  BT_CS_STATE_DATA_ERASING // 蓝牙CS已禁用且正在擦除
+  BT_CS_STATE_DATA_ERASING            // 蓝牙CS已禁用且正在擦除
 };
 
+enum flash_state_t {
+  FLASH_STATE_IDLE,         // 蓝牙CS空闲状态
+  FLASH_STATE_DATA_WRITING, // 蓝牙CS已禁用且正在写入
+  FLASH_STATE_DATA_READING, // 蓝牙CS已禁用且正在读取
+  FLASH_STATE_DATA_ERASING  // 蓝牙CS已禁用且正在擦除
+};
+
+// typedef struct {
+//   uint32_t report_index; // 测距结果的索引
+//   uint64_t timestamp_ms; // 记录写入时的毫秒数
+//   cs_de_report_t report; // 原始测距结果
+// } store_cs_de_report_t;
+
 static enum bt_cs_state_t bt_cs_state = BT_CS_STATE_IDLE; // 初始化为空闲状态
+static enum flash_state_t flash_state = FLASH_STATE_IDLE; // 初始化为空闲状态
 
 #define CON_STATUS_LED DK_LED1
 
@@ -199,6 +213,7 @@ static cs_de_dist_estimates_t get_distance(uint8_t ap) {
   return averaged_result;
 }
 
+// static __IO uint64_t flash_index = 0;
 static void ranging_data_get_complete_cb(struct bt_conn *conn,
                                          uint16_t ranging_counter, int err) {
   ARG_UNUSED(conn);
@@ -221,8 +236,6 @@ static void ranging_data_get_complete_cb(struct bt_conn *conn,
   net_buf_simple_reset(&latest_local_steps);
   net_buf_simple_reset(&latest_peer_steps);
   k_sem_give(&sem_local_steps);
-  // 存储原始数据
-  //   store_cs_de_report(&cs_de_report);
   // 这是正儿八经算距离了
   cs_de_quality_t quality = cs_de_calc(&cs_de_report);
 
@@ -232,6 +245,24 @@ static void ranging_data_get_complete_cb(struct bt_conn *conn,
         store_distance_estimates(&cs_de_report);
       }
     }
+  }
+  if (flash_state == FLASH_STATE_IDLE) {
+    // 存入flash
+    flash_state = FLASH_STATE_DATA_WRITING;
+    static store_cs_de_report_t store_cs_de_report;
+    store_cs_de_report.report_index = flash_ops_get_index();
+    store_cs_de_report.timestamp_ms = k_uptime_get();
+    // store_cs_de_report.report = cs_de_report;
+    memcpy(&store_cs_de_report.report, &cs_de_report, sizeof(cs_de_report_t));
+    err = flash_write_data(flash_dev, store_cs_de_report.report_index,
+                           &store_cs_de_report, sizeof(store_cs_de_report));
+    if (0 != err) {
+      LOG_ERR("Flash write error: %d", err);
+      flash_state = FLASH_STATE_IDLE;
+      return;
+    }
+    flash_ops_increment_index();
+    flash_state = FLASH_STATE_IDLE;
   }
 }
 
@@ -421,7 +452,6 @@ static void disconnected_cb(struct bt_conn *conn, uint8_t reason) {
   }
   // 更新 LED 状态，指示蓝牙已断开
   dk_set_led_off(CON_STATUS_LED); // 关闭连接状态指示灯
-
 }
 
 static void remote_capabilities_cb(struct bt_conn *conn, uint8_t status,
@@ -571,7 +601,7 @@ static void button0_work_handler(struct k_work *work) {
   led_on(0);
   bt_cs_state = BT_CS_STATE_ENABLED; // 更新CS状态为已启用
 }
-// 按键1负责停止测距流程
+// 按键1负责停止测距流程，
 static void button1_work_handler(struct k_work *work) {
   if (!gpio_pin_get(BUTTON1_PORT, BUTTON1_PIN)) { // 按键已释放
     LOG_INF("Button 1 released (debounced)");
@@ -584,7 +614,14 @@ static void button1_work_handler(struct k_work *work) {
   // 关闭CS指示灯
   led_off(0);
 }
+
+static void _debug_print_report(store_cs_de_report_t *p_rep) {
+  LOG_INF("=======log %u=======", p_rep->report_index);
+  LOG_INF("timestamp:%llu", p_rep->timestamp_ms);
+  // LOG_INF("n_ap:%d", p_rep->report.n_ap);
+}
 // 按键2负责读取flash已存储的内容，且首先保证如果没停则不操作
+static store_cs_de_report_t record; // 用于上传与擦除的结构体。与数据写入的分离
 static void button2_work_handler(struct k_work *work) {
   if (!gpio_pin_get(BUTTON2_PORT, BUTTON2_PIN)) { // 按键已释放
     LOG_INF("Button 2 released (debounced)");
@@ -600,29 +637,91 @@ static void button2_work_handler(struct k_work *work) {
   led_on(1);
   // 更新CS状态为已禁用且正在上传
   bt_cs_state = BT_CS_STATE_DISABLED_AND_UPLOADING;
-  //   flash_read_data(); // 假设有一个 flash 读取接口
-
+  flash_state = FLASH_STATE_DATA_READING;
+  // ========== 读取全部数据并打印 ==========
+  uint64_t total = flash_ops_get_index();
+  LOG_INF("total: %llu", total);
+  int err = 0;
+  // LOG_INF("Read %llu records from flash:", total);
+  for (uint64_t i = 0; i < total; i++) {
+    err = flash_read_data(flash_dev, i, &record, sizeof(store_cs_de_report_t));
+    if (err) {
+      LOG_ERR("Flash read error at %llu: %d", i, err);
+      break;
+    }
+    LOG_INF("start read flash %llu", i);
+    _debug_print_report(&record);
+  }
+  LOG_INF("Flash read finished.");
+  bt_cs_state = BT_CS_STATE_IDLE;
+  flash_state = FLASH_STATE_IDLE;
+  led_off(1);
 }
-
 // 按键3负责在上传后擦除数据，保证后续使用。无论是正在CS测距或正在上传时都不应该起效
+// 强制擦除指示,如果任何时候连续按3次按键3，则强制擦除
+#define FORCE_ERASE_THRESHOLD 3
+#define FORCE_ERASE_TIMEOUT_MS 2000
+
+static uint8_t force_erase_count = 0;
+static int64_t last_force_erase_tick = 0;
+
 static void button3_work_handler(struct k_work *work) {
   if (!gpio_pin_get(BUTTON3_PORT, BUTTON3_PIN)) { // 按键已释放
     LOG_INF("Button 3 released (debounced)");
     return;
   }
-  if (bt_cs_state == BT_CS_STATE_DISABLED_AND_UPLOADING) {
-    LOG_INF("CS procedures are disabled and uploading, cannot erase Flash");
+  int64_t now = k_uptime_get();
+  // 如果距离上次按下超过超时时间，则重置计数
+  if (now - last_force_erase_tick > FORCE_ERASE_TIMEOUT_MS) {
+    force_erase_count = 0;
+  }
+  last_force_erase_tick = now;
+
+  force_erase_count++;
+  // 非强制擦除场景：只有在未上传、未测距、未达到3次才拦截
+  if (force_erase_count < FORCE_ERASE_THRESHOLD) {
+    if (bt_cs_state == BT_CS_STATE_DISABLED_AND_UPLOADING) {
+      LOG_INF("CS procedures are disabled and uploading, cannot erase Flash");
+      return;
+    }
+    if (bt_cs_state == BT_CS_STATE_ENABLED) {
+      LOG_INF("CS procedures are enabled, cannot erase Flash");
+      return;
+    }
+    LOG_INF("Button 3 pressed (%d/%d). Press %d times quickly to force erase.",
+            force_erase_count, FORCE_ERASE_THRESHOLD, FORCE_ERASE_THRESHOLD);
     return;
   }
-  if (bt_cs_state == BT_CS_STATE_ENABLED) {
-    LOG_INF("CS procedures are enabled, cannot erase Flash");
-    return;
-  }
-  LOG_INF("Button 3 pressed: Erase Flash");
+  // LOG_INF("Button 3 pressed: Erase Flash");
+  // 满足3次，强制擦除
+  LOG_INF("Force erase triggered after %d presses!", FORCE_ERASE_THRESHOLD);
+  force_erase_count = 0; // 擦除后立即复位
   // 关闭FLASH上传指示灯
   led_off(1);
   bt_cs_state = BT_CS_STATE_DATA_ERASING;
+  flash_state = FLASH_STATE_DATA_ERASING;
   //   flash_erase_data(); // 假设有一个 flash 擦除接口
+  // ========== 擦除所有使用过的数据 ==========
+  int err = 0;
+  uint64_t flash_size = flash_ops_get_size();
+  for (uint64_t i = 0; i < flash_size / SPI_FLASH_SECTOR_SIZE; i++) {
+    led_on(1);
+    err = flash_read(flash_dev, i * SPI_FLASH_SECTOR_SIZE, &record,
+                     sizeof(store_cs_de_report_t));
+    // 何谓擦除？全填充0xFF。因此这在无符号数中就是-1
+    if (0xFFFFFFFF == record.report_index) {
+      LOG_INF("flash is empty");
+      break;
+    }
+    LOG_INF("start earse flash %llu", i);
+    err = flash_erase(flash_dev, i * SPI_FLASH_SECTOR_SIZE,
+                      SPI_FLASH_SECTOR_SIZE);
+    led_off(1);
+  }
+
+  flash_state = FLASH_STATE_IDLE;
+  bt_cs_state = BT_CS_STATE_IDLE;
+  LOG_INF("Force erase finished");
 }
 
 // 按键回调函数,仅用于提交队列
@@ -714,8 +813,9 @@ int main(void) {
   // const struct bt_le_cs_set_default_settings_param default_settings = {
   //     .enable_initiator_role = true,
   //     .enable_reflector_role = false,
-  //     .cs_sync_antenna_selection = BT_LE_CS_ANTENNA_SELECTION_OPT_REPETITIVE,
-  //     .max_tx_power = BT_HCI_OP_LE_CS_MAX_MAX_TX_POWER,
+  //     .cs_sync_antenna_selection =
+  //     BT_LE_CS_ANTENNA_SELECTION_OPT_REPETITIVE, .max_tx_power =
+  //     BT_HCI_OP_LE_CS_MAX_MAX_TX_POWER,
   // };
 
   err = bt_le_cs_set_default_settings(connection, &default_settings);
@@ -805,9 +905,10 @@ int main(void) {
   //         BT_LE_CS_TONE_ANTENNA_CONFIGURATION_A1_B1,
   //     .phy = BT_LE_CS_PROCEDURE_PHY_1M,
   //     .tx_power_delta = 0x80,
-  //     .preferred_peer_antenna = BT_LE_CS_PROCEDURE_PREFERRED_PEER_ANTENNA_1,
-  //     .snr_control_initiator = BT_LE_CS_SNR_CONTROL_NOT_USED,
-  //     .snr_control_reflector = BT_LE_CS_SNR_CONTROL_NOT_USED,
+  //     .preferred_peer_antenna =
+  //     BT_LE_CS_PROCEDURE_PREFERRED_PEER_ANTENNA_1, .snr_control_initiator =
+  //     BT_LE_CS_SNR_CONTROL_NOT_USED, .snr_control_reflector =
+  //     BT_LE_CS_SNR_CONTROL_NOT_USED,
   // };
 
   err = bt_le_cs_set_procedure_parameters(connection, &procedure_params);
@@ -828,6 +929,9 @@ int main(void) {
   }
   //   这是第一次连接
   bt_cs_state = BT_CS_STATE_ENABLED;
+  LOG_INF("!!!CS procedures are enabled !!!");
+  LOG_INF("cs_de_report size: %d", sizeof(cs_de_report_t));
+  LOG_INF("store_cs_de_report_t size: %d", sizeof(store_cs_de_report_t));
 
   while (true) {
     k_sleep(K_MSEC(1000));
@@ -843,9 +947,9 @@ int main(void) {
       }
     }
     if (bt_cs_state == BT_CS_STATE_ENABLED) {
-      LOG_INF("Connected, sleeping for a few seconds...");
+      // LOG_INF("Connected, sleeping for a few seconds...");
     }
-    LOG_INF("Sleeping for a few seconds...");
+    // LOG_INF("Sleeping for a few seconds...");
   }
 
   return 0;

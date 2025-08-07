@@ -59,7 +59,7 @@
 
 
 &uart30 {
-	current-speed = <115200>;
+	current-speed = <230400>;
 	pinctrl-0 = <&uart30_default>;
 	pinctrl-1 = <&uart30_sleep>;
 	pinctrl-names = "default", "sleep";

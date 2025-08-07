@@ -5,7 +5,9 @@
 #include <zephyr/device.h>
 #include <zephyr/drivers/flash.h>
 
-
+// flash设备定义
+#define SPI_FLASH_TEST_REGION_OFFSET 0xff000
+#define SPI_FLASH_SECTOR_SIZE 4096
 // 获取 Flash 设备
 extern const struct device *flash_dev;
 
