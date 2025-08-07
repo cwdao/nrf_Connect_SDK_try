@@ -114,15 +114,15 @@ static const struct bt_le_cs_set_default_settings_param default_settings = {
 static struct bt_le_cs_create_config_params config_params = {
     .id = CS_CONFIG_ID,
     .main_mode_type = BT_CONN_LE_CS_MAIN_MODE_2,
-    .sub_mode_type = BT_CONN_LE_CS_SUB_MODE_1,
-    .min_main_mode_steps = 2,
-    .max_main_mode_steps = 5,
+    .sub_mode_type = BT_CONN_LE_CS_SUB_MODE_UNUSED,
+    .min_main_mode_steps = 1,
+    .max_main_mode_steps = 1,
     .main_mode_repetition = 0,
     .mode_0_steps = NUM_MODE_0_STEPS,
     .role = BT_CONN_LE_CS_ROLE_INITIATOR,
     .rtt_type = BT_CONN_LE_CS_RTT_TYPE_AA_ONLY,
     .cs_sync_phy = BT_CONN_LE_CS_SYNC_1M_PHY,
-    .channel_map_repetition = 3,
+    .channel_map_repetition = 1,
     .channel_selection_type = BT_CONN_LE_CS_CHSEL_TYPE_3B,
     .ch3c_shape = BT_CONN_LE_CS_CH3C_SHAPE_HAT,
     .ch3c_jump = 2,
@@ -132,10 +132,10 @@ static struct bt_le_cs_create_config_params config_params = {
 static const struct bt_le_cs_set_procedure_parameters_param procedure_params = {
     .config_id = CS_CONFIG_ID,
     .max_procedure_len = 1000,
-    .min_procedure_interval = 10,
-    .max_procedure_interval = 10,
+    .min_procedure_interval = 1,
+    .max_procedure_interval = 5,
     .max_procedure_count = 0,
-    .min_subevent_len = 60000,
+    .min_subevent_len = 10000,
     .max_subevent_len = 60000,
     .tone_antenna_config_selection = BT_LE_CS_TONE_ANTENNA_CONFIGURATION_A1_B1,
     .phy = BT_LE_CS_PROCEDURE_PHY_1M,
@@ -246,24 +246,24 @@ static void ranging_data_get_complete_cb(struct bt_conn *conn,
       }
     }
   }
-  if (flash_state == FLASH_STATE_IDLE) {
-    // 存入flash
-    flash_state = FLASH_STATE_DATA_WRITING;
-    static store_cs_de_report_t store_cs_de_report;
-    store_cs_de_report.report_index = flash_ops_get_index();
-    store_cs_de_report.timestamp_ms = k_uptime_get();
-    // store_cs_de_report.report = cs_de_report;
-    memcpy(&store_cs_de_report.report, &cs_de_report, sizeof(cs_de_report_t));
-    err = flash_write_data(flash_dev, store_cs_de_report.report_index,
-                           &store_cs_de_report, sizeof(store_cs_de_report));
-    if (0 != err) {
-      LOG_ERR("Flash write error: %d", err);
-      flash_state = FLASH_STATE_IDLE;
-      return;
-    }
-    flash_ops_increment_index();
-    flash_state = FLASH_STATE_IDLE;
-  }
+  // if (flash_state == FLASH_STATE_IDLE) {
+  //   // 存入flash
+  //   flash_state = FLASH_STATE_DATA_WRITING;
+  //   static store_cs_de_report_t store_cs_de_report;
+  //   store_cs_de_report.report_index = flash_ops_get_index();
+  //   store_cs_de_report.timestamp_ms = k_uptime_get();
+  //   // store_cs_de_report.report = cs_de_report;
+  //   memcpy(&store_cs_de_report.report, &cs_de_report, sizeof(cs_de_report_t));
+  //   err = flash_write_data(flash_dev, store_cs_de_report.report_index,
+  //                          &store_cs_de_report, sizeof(store_cs_de_report));
+  //   if (0 != err) {
+  //     LOG_ERR("Flash write error: %d", err);
+  //     flash_state = FLASH_STATE_IDLE;
+  //     return;
+  //   }
+  //   flash_ops_increment_index();
+  //   flash_state = FLASH_STATE_IDLE;
+  // }
 }
 
 // 每次测距子事件结束之后，得到了测距结果，会进入这个回调
