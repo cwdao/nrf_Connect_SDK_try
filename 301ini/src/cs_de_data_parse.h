@@ -4,7 +4,7 @@
 #include <bluetooth/cs_de.h>
 
 typedef struct {
-  uint32_t report_index; // 测距结果的索引
+  uint64_t report_index; // 测距结果的索引
   uint64_t timestamp_ms; // 记录写入时的毫秒数
   cs_de_report_t report; // 原始测距结果
 } store_cs_de_report_t;

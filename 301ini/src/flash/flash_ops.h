@@ -65,6 +65,7 @@ int flash_buffer_flush_chunked(void);  // 分片写入
 uint32_t flash_buffer_get_count(void);
 bool flash_buffer_is_full(void);
 bool flash_buffer_is_empty(void);
+void flash_buffer_debug_print(void);
 
 // 紧凑存储的读写函数
 int flash_write_data_compact(const struct device *flash_dev, uint64_t index,

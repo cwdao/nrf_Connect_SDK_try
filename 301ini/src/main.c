@@ -72,7 +72,7 @@ static enum flash_state_t flash_state = FLASH_STATE_IDLE; // 初始化为空闲�
 // 测试测距相关变量
 #define TEST_RANGING_ENABLED 1
 static uint32_t ranging_count = 0;             // 测距计数器
-static const uint32_t TEST_RANGING_COUNT = 20; // 测试测距次数
+static const uint32_t TEST_RANGING_COUNT = 25; // 测试测距次数
 
 #define CON_STATUS_LED DK_LED1
 
@@ -82,9 +82,15 @@ static const uint32_t TEST_RANGING_COUNT = 20; // 测试测距次数
 #define DE_SLIDING_WINDOW_SIZE (10)
 #define MAX_AP (CONFIG_BT_RAS_MAX_ANTENNA_PATHS)
 
+// 增加缓冲区大小，提高数据存储能力，乘不乘2好像都没用……
 #define LOCAL_PROCEDURE_MEM                                                    \
   ((BT_RAS_MAX_STEPS_PER_PROCEDURE * sizeof(struct bt_le_cs_subevent_step)) +  \
-   (BT_RAS_MAX_STEPS_PER_PROCEDURE * BT_RAS_MAX_STEP_DATA_LEN))
+   (BT_RAS_MAX_STEPS_PER_PROCEDURE * BT_RAS_MAX_STEP_DATA_LEN) * 2)  // 增加2倍
+
+// 为peer steps定义更大的缓冲区
+#define BT_RAS_PROCEDURE_MEM_CUSTOM                                           \
+  ((BT_RAS_MAX_STEPS_PER_PROCEDURE * sizeof(struct bt_le_cs_subevent_step)) +  \
+   (BT_RAS_MAX_STEPS_PER_PROCEDURE * BT_RAS_MAX_STEP_DATA_LEN) * 2)  // 增加2倍
 
 static K_SEM_DEFINE(sem_remote_capabilities_obtained, 0, 1);
 static K_SEM_DEFINE(sem_config_created, 0, 1);
@@ -99,7 +105,7 @@ static K_MUTEX_DEFINE(distance_estimate_buffer_mutex);
 
 static struct bt_conn *connection;
 NET_BUF_SIMPLE_DEFINE_STATIC(latest_local_steps, LOCAL_PROCEDURE_MEM);
-NET_BUF_SIMPLE_DEFINE_STATIC(latest_peer_steps, BT_RAS_PROCEDURE_MEM);
+NET_BUF_SIMPLE_DEFINE_STATIC(latest_peer_steps, BT_RAS_PROCEDURE_MEM_CUSTOM);
 static int32_t most_recent_local_ranging_counter = PROCEDURE_COUNTER_NONE;
 static int32_t dropped_ranging_counter = PROCEDURE_COUNTER_NONE;
 
@@ -143,7 +149,7 @@ static const struct bt_le_cs_set_procedure_parameters_param procedure_params = {
     .config_id = CS_CONFIG_ID,
     .max_procedure_len = 1000,
     .min_procedure_interval = 1,
-    .max_procedure_interval = 5,
+    .max_procedure_interval = 6,
     .max_procedure_count = 0,
     .min_subevent_len = 10000,
     .max_subevent_len = 60000,
@@ -223,7 +229,8 @@ static cs_de_dist_estimates_t get_distance(uint8_t ap) {
   return averaged_result;
 }
 
-// static __IO uint64_t flash_index = 0;
+// 每次取到一个样本，就给一个全局标号
+static __IO uint64_t cs_data_index = 0;
 static void ranging_data_get_complete_cb(struct bt_conn *conn,
                                          uint16_t ranging_counter, int err) {
   ARG_UNUSED(conn);
@@ -263,19 +270,19 @@ static void ranging_data_get_complete_cb(struct bt_conn *conn,
   if (flash_state == FLASH_STATE_IDLE) {
     // 将数据添加到环形缓冲区，添加全局计数标记和全局ms时间戳
     static store_cs_de_report_t temp_data;
-    temp_data.report_index = flash_ops_get_index();
+    temp_data.report_index = cs_data_index;
     temp_data.timestamp_ms = k_uptime_get();
     memcpy(&temp_data.report, &cs_de_report, sizeof(cs_de_report_t));
-
-    LOG_INF("data -> buffer, Idx: %d, Tstp: %llu",
-            temp_data.report_index, temp_data.timestamp_ms);
+    // 到此处的数据时间戳都是正常的
+    // LOG_INF("data -> buffer, Idx: %d, Tstp: %llu", temp_data.report_index,
+    //         temp_data.timestamp_ms);
 
     int err = flash_buffer_put(&temp_data, sizeof(store_cs_de_report_t));
     if (err) {
       LOG_ERR("Failed to add data to buffer: %d", err);
       return;
     }
-    flash_ops_increment_index();
+    cs_data_index++;
 
     // 如果缓冲区达到一定数量，触发批量写入
     uint32_t buffer_count = flash_buffer_get_count();
@@ -289,7 +296,7 @@ static void ranging_data_get_complete_cb(struct bt_conn *conn,
 // 增加测距计数器
 #ifdef TEST_RANGING_ENABLED
   ranging_count++;
-  LOG_INF("Ranging count: %d/%d", ranging_count, TEST_RANGING_COUNT);
+  // LOG_INF("Ranging test: %d/%d", ranging_count, TEST_RANGING_COUNT);
 
   // 检查是否达到测试次数
   if (ranging_count >= TEST_RANGING_COUNT) {
@@ -306,11 +313,11 @@ static void ranging_data_get_complete_cb(struct bt_conn *conn,
     led_off(0);
 
     // 强制刷新缓冲区
-    LOG_INF("Forcing final buffer flush...");
+    LOG_INF("Forcing buffer flush...");
     uint32_t final_buffer_count = flash_buffer_get_count();
-    LOG_INF("Final buffer count before flush: %d", final_buffer_count);
+    LOG_DBG("data count before flush: %d", final_buffer_count);
     k_work_schedule(&flash_write_work, K_NO_WAIT);
-    LOG_INF("Final buffer flush completed");
+    LOG_INF("Buffer flush enabled");
   }
 #endif
 
@@ -323,7 +330,7 @@ static void ranging_data_get_complete_cb(struct bt_conn *conn,
   // 将周期转换为纳秒
   elapsed_ns = k_cyc_to_ns_floor64(elapsed_cycles);
 
-  printk("Callback execution time: %llu ns\n", elapsed_ns);
+  // printk("Cb exec : %llu ns\n", elapsed_ns);
 }
 
 // 每次测距子事件结束之后，得到了测距结果，会进入这个回调
@@ -688,8 +695,8 @@ static void button1_work_handler(struct k_work *work) {
 }
 
 static void _debug_print_report(store_cs_de_report_t *p_rep) {
-  LOG_INF("=======log %u=======", p_rep->report_index);
-  LOG_INF("timestamp:%u ms", (uint32_t)p_rep->timestamp_ms);
+  LOG_INF("=======log %llu=======", p_rep->report_index);
+  LOG_INF("timestamp:%llu ms", p_rep->timestamp_ms);
   // LOG_INF("n_ap:%d", p_rep->report.n_ap);
 }
 // 按键2负责读取flash已存储的内容，且首先保证如果没停则不操作
@@ -724,7 +731,7 @@ static void button2_work_handler(struct k_work *work) {
       LOG_ERR("Flash read error at %llu: %d", i, err);
       break;
     }
-    LOG_INF("Read data - Idx: %d, Tstp: %u ms", record.report_index,
+    LOG_INF("Read data - Idx: %llu, Tstp: %u ms", record.report_index,
             (uint32_t)record.timestamp_ms);
     _debug_print_report(&record);
   }
@@ -785,7 +792,7 @@ static void button3_work_handler(struct k_work *work) {
     err = flash_read(flash_dev, i * SPI_FLASH_SECTOR_SIZE, &record,
                      sizeof(store_cs_de_report_t));
     // 何谓擦除？全填充0xFF。因此这在无符号数中就是-1
-    if (0xFFFFFFFF == record.report_index) {
+    if (0xFFFFFFFFFFFFFFFF == record.report_index) {
       LOG_INF("flash is empty");
       break;
     }
@@ -868,6 +875,10 @@ int main(void) {
 
   // 运行flash性能测试
   flash_performance_test();
+  
+  // 打印缓冲区大小信息
+  LOG_INF("Buffer sizes - LOCAL_PROCEDURE_MEM: %d bytes, BT_RAS_PROCEDURE_MEM_CUSTOM: %d bytes",
+          LOCAL_PROCEDURE_MEM, BT_RAS_PROCEDURE_MEM_CUSTOM);
 
   LOG_INF("Starting Channel Sounding Initiator Sample");
 
@@ -1072,8 +1083,8 @@ int main(void) {
     }
     if (bt_cs_state == BT_CS_STATE_ENABLED) {
 #ifdef TEST_RANGING_ENABLED
-      LOG_INF("CS enabled - Progress: %d/%d ranging measurements",
-              ranging_count, TEST_RANGING_COUNT);
+      // LOG_INF("CS short test enabled - Progress: %d/%d ranging measurements",
+      //         ranging_count, TEST_RANGING_COUNT);
 #endif
     }
     // LOG_INF("Sleeping for a few seconds...");

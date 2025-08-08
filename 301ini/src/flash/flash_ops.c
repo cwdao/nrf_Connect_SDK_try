@@ -63,21 +63,29 @@ int flash_buffer_put(const void *data, size_t size) {
   if (flash_buffer.is_full) {
     LOG_WRN("Flash buffer is full, dropping oldest record");
     // 缓冲区满时，覆盖最旧的数据
-    flash_buffer.read_index = (flash_buffer.read_index + 1) & FLASH_BUFFER_MASK;
+    flash_buffer.read_index = (flash_buffer.read_index + 1) % FLASH_BUFFER_SIZE;
     flash_buffer.count--;
+    LOG_DBG("Buffer full - read_index moved to %d", flash_buffer.read_index);
   }
 
   // 复制数据到缓冲区
   memcpy(flash_buffer.buffer[flash_buffer.write_index], data, size);
-  flash_buffer.write_index = (flash_buffer.write_index + 1) & FLASH_BUFFER_MASK;
+  
+  // 打印刚刚写入的数据的timestamp
+//   LOG_DBG("->> buffer, time: %llu, write_idx: %d, count: %d",
+//           ((store_cs_de_report_t *)flash_buffer.buffer[flash_buffer.write_index])
+//               ->timestamp_ms,
+//           flash_buffer.write_index,
+//           flash_buffer.count);
+  
+  flash_buffer.write_index = (flash_buffer.write_index + 1) % FLASH_BUFFER_SIZE;
   flash_buffer.count++;
 
   // 检查是否满
   if (flash_buffer.count >= FLASH_BUFFER_SIZE) {
     flash_buffer.is_full = true;
+    LOG_DBG("Buffer became full - count: %d, write_idx: %d", flash_buffer.count, flash_buffer.write_index);
   }
-
-  LOG_DBG("Added data to buffer, count: %d", flash_buffer.count);
   return 0;
 }
 
@@ -89,11 +97,21 @@ int flash_buffer_flush(void) {
   }
 
   LOG_INF("Flushing %d records to flash", flash_buffer.count);
+  
+  // 调试：打印缓冲区内容
+  flash_buffer_debug_print();
 
   int err = 0;
   uint32_t records_to_write = flash_buffer.count;
 
   for (uint32_t i = 0; i < records_to_write; i++) {
+    // 打印正在读取的数据的timestamp
+    LOG_DBG("Flushing record %d: time: %llu, read_idx: %d",
+            i,
+            ((store_cs_de_report_t *)flash_buffer.buffer[flash_buffer.read_index])
+                ->timestamp_ms,
+            flash_buffer.read_index);
+    
     err = flash_write_data_compact(flash_dev, flash_index,
                                    flash_buffer.buffer[flash_buffer.read_index],
                                    RECORD_SIZE);
@@ -103,7 +121,7 @@ int flash_buffer_flush(void) {
     }
 
     flash_index++;
-    flash_buffer.read_index = (flash_buffer.read_index + 1) & FLASH_BUFFER_MASK;
+    flash_buffer.read_index = (flash_buffer.read_index + 1) % FLASH_BUFFER_SIZE;
     flash_buffer.count--;
   }
 
@@ -126,6 +144,9 @@ int flash_buffer_flush_chunked(void) {
     chunk_write_state.remaining_records = flash_buffer.count;
     chunk_write_state.current_chunk = 0;
     LOG_INF("Starting chunked flush of %d records", flash_buffer.count);
+    
+    // 调试：打印缓冲区内容
+    // flash_buffer_debug_print();
   }
 
   // 安全检查：如果remaining_records已经是负数或0，说明已经完成
@@ -156,6 +177,13 @@ int flash_buffer_flush_chunked(void) {
 
   int err = 0;
   for (uint32_t i = 0; i < chunk_size; i++) {
+    // 打印正在读取的数据的timestamp
+    LOG_DBG("Chunk flushing record %d: time: %llu, read_idx: %d",
+            i,
+            ((store_cs_de_report_t *)flash_buffer.buffer[flash_buffer.read_index])
+                ->timestamp_ms,
+            flash_buffer.read_index);
+    
     err = flash_write_data_compact(flash_dev, flash_index,
                                    flash_buffer.buffer[flash_buffer.read_index],
                                    RECORD_SIZE);
@@ -166,7 +194,7 @@ int flash_buffer_flush_chunked(void) {
     }
 
     flash_index++;
-    flash_buffer.read_index = (flash_buffer.read_index + 1) & FLASH_BUFFER_MASK;
+    flash_buffer.read_index = (flash_buffer.read_index + 1) % FLASH_BUFFER_SIZE;
     flash_buffer.count--;
     chunk_write_state.remaining_records--;
   }
@@ -198,6 +226,31 @@ bool flash_buffer_is_full(void) { return flash_buffer.is_full; }
 // 检查缓冲区是否空
 bool flash_buffer_is_empty(void) { return flash_buffer.count == 0; }
 
+// 调试函数：打印缓冲区内容
+void flash_buffer_debug_print(void) {
+  LOG_INF("=== Flash Buffer Debug Info ===");
+  LOG_INF("Buffer count: %d, read_idx: %d, write_idx: %d, is_full: %s",
+          flash_buffer.count, flash_buffer.read_index, flash_buffer.write_index,
+          flash_buffer.is_full ? "true" : "false");
+  
+  if (flash_buffer.count > 0) {
+    LOG_INF("Buffer contents:");
+    uint32_t idx = flash_buffer.read_index;
+    for (uint32_t i = 0; i < flash_buffer.count; i++) {
+      LOG_INF("  [%d] time: %llu, report_idx: %llu, write_pos: %d, read_pos: %d",
+              idx,
+              ((store_cs_de_report_t *)flash_buffer.buffer[idx])->timestamp_ms,
+              ((store_cs_de_report_t *)flash_buffer.buffer[idx])->report_index,
+              flash_buffer.write_index,
+              flash_buffer.read_index);
+      idx = (idx + 1) % FLASH_BUFFER_SIZE;
+    }
+  } else {
+    LOG_INF("Buffer is empty");
+  }
+  LOG_INF("=== End Flash Buffer Debug ===");
+}
+
 // 计算扇区索引和扇区内偏移
 static void calculate_sector_and_offset(uint64_t record_index,
                                         uint64_t *sector_index,
@@ -217,7 +270,7 @@ int flash_write_data_compact(const struct device *flash_dev, uint64_t index,
 
   // 如果是扇区的第一个记录，需要先擦除扇区
   if (offset_in_sector == 0) {
-    LOG_INF("Erasing sector %llu for new data", sector_index);
+    LOG_INF("Erasing sector %llu for new sector", sector_index);
     err = flash_erase(flash_dev, sector_index * SPI_FLASH_SECTOR_SIZE,
                       SPI_FLASH_SECTOR_SIZE);
     if (err) {
@@ -238,6 +291,10 @@ int flash_write_data_compact(const struct device *flash_dev, uint64_t index,
     LOG_ERR("Flash write failed: %d", err);
   } else {
     LOG_INF("Flash write successful - Index: %llu", index);
+    // 打印写入数据的timestamp以确保成功
+    LOG_INF("->> flash write, time: %llu, idx: %llu",
+            ((store_cs_de_report_t *)data)->timestamp_ms,
+            ((store_cs_de_report_t *)data)->report_index);
   }
 
   return err;
