@@ -37,6 +37,10 @@ static struct k_work button0_work;
 static struct k_work button1_work;
 static struct k_work button2_work;
 static struct k_work button3_work;
+// 定义flash写入工作队列
+static struct k_work_delayable flash_write_work;
+// 定义定时刷新缓冲区的工作队列
+static struct k_work_delayable flash_timer_work;
 // 指示蓝牙连接状态
 // static bool bt_is_connected = false;
 
@@ -64,6 +68,11 @@ enum flash_state_t {
 
 static enum bt_cs_state_t bt_cs_state = BT_CS_STATE_IDLE; // 初始化为空闲状态
 static enum flash_state_t flash_state = FLASH_STATE_IDLE; // 初始化为空闲状态
+
+// 测试测距相关变量
+#define TEST_RANGING_ENABLED 1
+static uint32_t ranging_count = 0;             // 测距计数器
+static const uint32_t TEST_RANGING_COUNT = 20; // 测试测距次数
 
 #define CON_STATUS_LED DK_LED1
 
@@ -134,7 +143,7 @@ static const struct bt_le_cs_set_procedure_parameters_param procedure_params = {
     .config_id = CS_CONFIG_ID,
     .max_procedure_len = 1000,
     .min_procedure_interval = 1,
-    .max_procedure_interval = 2,
+    .max_procedure_interval = 5,
     .max_procedure_count = 0,
     .min_subevent_len = 10000,
     .max_subevent_len = 60000,
@@ -252,24 +261,58 @@ static void ranging_data_get_complete_cb(struct bt_conn *conn,
     }
   }
   if (flash_state == FLASH_STATE_IDLE) {
-    // 存入flash
-    flash_state = FLASH_STATE_DATA_WRITING;
-    static store_cs_de_report_t store_cs_de_report;
-    store_cs_de_report.report_index = flash_ops_get_index();
-    store_cs_de_report.timestamp_ms = k_uptime_get();
-    // store_cs_de_report.report = cs_de_report;
-    memcpy(&store_cs_de_report.report, &cs_de_report,
-    sizeof(cs_de_report_t)); err = flash_write_data(flash_dev,
-    store_cs_de_report.report_index,
-                           &store_cs_de_report, sizeof(store_cs_de_report));
-    if (0 != err) {
-      LOG_ERR("Flash write error: %d", err);
-      flash_state = FLASH_STATE_IDLE;
+    // 将数据添加到环形缓冲区，添加全局计数标记和全局ms时间戳
+    static store_cs_de_report_t temp_data;
+    temp_data.report_index = flash_ops_get_index();
+    temp_data.timestamp_ms = k_uptime_get();
+    memcpy(&temp_data.report, &cs_de_report, sizeof(cs_de_report_t));
+
+    LOG_INF("data -> buffer, Idx: %d, Tstp: %llu",
+            temp_data.report_index, temp_data.timestamp_ms);
+
+    int err = flash_buffer_put(&temp_data, sizeof(store_cs_de_report_t));
+    if (err) {
+      LOG_ERR("Failed to add data to buffer: %d", err);
       return;
     }
     flash_ops_increment_index();
-    flash_state = FLASH_STATE_IDLE;
+
+    // 如果缓冲区达到一定数量，触发批量写入
+    uint32_t buffer_count = flash_buffer_get_count();
+    if (buffer_count >= FLASH_BUFFER_WRITE_TRIGGER_COUNT ||
+        flash_buffer_is_full()) { // 27个记录（9个扇区）约1.35秒的数据
+      LOG_INF("Buffer count: %d, triggering flush", buffer_count);
+      k_work_schedule(&flash_write_work, K_NO_WAIT);
+    }
   }
+
+// 增加测距计数器
+#ifdef TEST_RANGING_ENABLED
+  ranging_count++;
+  LOG_INF("Ranging count: %d/%d", ranging_count, TEST_RANGING_COUNT);
+
+  // 检查是否达到测试次数
+  if (ranging_count >= TEST_RANGING_COUNT) {
+    LOG_INF("Test completed! Reached %d ranging measurements, disabling CS "
+            "procedures",
+            TEST_RANGING_COUNT);
+
+    // 禁用信道探测
+    params.enable = 0;
+    bt_le_cs_procedure_enable(connection, &params);
+    bt_cs_state = BT_CS_STATE_DISABLED;
+
+    // 关闭CS指示灯
+    led_off(0);
+
+    // 强制刷新缓冲区
+    LOG_INF("Forcing final buffer flush...");
+    uint32_t final_buffer_count = flash_buffer_get_count();
+    LOG_INF("Final buffer count before flush: %d", final_buffer_count);
+    k_work_schedule(&flash_write_work, K_NO_WAIT);
+    LOG_INF("Final buffer flush completed");
+  }
+#endif
 
   // 获取结束的时钟周期
   end_cycles = k_cycle_get_32();
@@ -611,6 +654,12 @@ static void button0_work_handler(struct k_work *work) {
     LOG_INF("Button 0 released (debounced)");
     return;
   }
+#ifdef TEST_RANGING_ENABLED
+  // 重置测距计数器
+  ranging_count = 0;
+  LOG_INF("Button 0 pressed: Starting test with %d ranging measurements",
+          TEST_RANGING_COUNT);
+#endif
   params.enable = 1;
   bt_le_cs_procedure_enable(connection, &params);
   LOG_INF("Button 0 pressed: Start CS procedures");
@@ -630,15 +679,22 @@ static void button1_work_handler(struct k_work *work) {
   bt_cs_state = BT_CS_STATE_DISABLED; // 更新CS状态为已禁用
   // 关闭CS指示灯
   led_off(0);
+
+#ifdef TEST_RANGING_ENABLED
+  // 重置测距计数器
+  ranging_count = 0;
+  LOG_INF("Ranging counter reset to 0");
+#endif
 }
 
 static void _debug_print_report(store_cs_de_report_t *p_rep) {
   LOG_INF("=======log %u=======", p_rep->report_index);
-  LOG_INF("timestamp:%llu", p_rep->timestamp_ms);
+  LOG_INF("timestamp:%u ms", (uint32_t)p_rep->timestamp_ms);
   // LOG_INF("n_ap:%d", p_rep->report.n_ap);
 }
 // 按键2负责读取flash已存储的内容，且首先保证如果没停则不操作
 static store_cs_de_report_t record; // 用于上传与擦除的结构体。与数据写入的分离
+
 static void button2_work_handler(struct k_work *work) {
   if (!gpio_pin_get(BUTTON2_PORT, BUTTON2_PIN)) { // 按键已释放
     LOG_INF("Button 2 released (debounced)");
@@ -661,12 +717,15 @@ static void button2_work_handler(struct k_work *work) {
   int err = 0;
   // LOG_INF("Read %llu records from flash:", total);
   for (uint64_t i = 0; i < total; i++) {
-    err = flash_read_data(flash_dev, i, &record, sizeof(store_cs_de_report_t));
+    LOG_INF("Reading from Flash index %llu", i);
+    err = flash_read_data_compact(flash_dev, i, &record,
+                                  sizeof(store_cs_de_report_t));
     if (err) {
       LOG_ERR("Flash read error at %llu: %d", i, err);
       break;
     }
-    LOG_INF("start read flash %llu", i);
+    LOG_INF("Read data - Idx: %d, Tstp: %u ms", record.report_index,
+            (uint32_t)record.timestamp_ms);
     _debug_print_report(&record);
   }
   LOG_INF("Flash read finished.");
@@ -741,6 +800,43 @@ static void button3_work_handler(struct k_work *work) {
   LOG_INF("Force erase finished");
 }
 
+// Flash写入工作队列处理函数
+static void flash_write_work_handler(struct k_work *work) {
+  ARG_UNUSED(work);
+
+  flash_state = FLASH_STATE_DATA_WRITING;
+
+  // 使用分片写入，避免长时间阻塞
+  int err = flash_buffer_flush_chunked();
+  if (err < 0) {
+    LOG_ERR("Flash buffer flush error: %d", err);
+    flash_state = FLASH_STATE_IDLE;
+  } else if (err > 0) {
+    // 还有更多数据需要写入，延迟后继续
+    LOG_INF("Flash chunk completed, scheduling next chunk");
+    k_work_schedule(&flash_write_work, K_MSEC(FLASH_WRITE_CHUNK_DELAY_MS));
+  } else {
+    // 所有数据写入完成
+    LOG_INF("Flash buffer flush completed");
+    flash_state = FLASH_STATE_IDLE;
+  }
+}
+
+// 定时刷新缓冲区的工作队列处理函数
+static void flash_timer_work_handler(struct k_work *work) {
+  ARG_UNUSED(work);
+
+  // 检查缓冲区是否有数据需要刷新
+  uint32_t buffer_count = flash_buffer_get_count();
+  if (buffer_count > 0) {
+    LOG_INF("Timer triggered flush, buffer count: %d", buffer_count);
+    k_work_schedule(&flash_write_work, K_NO_WAIT);
+  }
+
+  // 重新提交定时工作，每10秒检查一次
+  k_work_schedule(&flash_timer_work, K_SECONDS(10));
+}
+
 // 按键回调函数,仅用于提交队列
 void button0_callback(void) { k_work_submit(&button0_work); }
 
@@ -762,11 +858,16 @@ int main(void) {
   k_work_init(&button1_work, button1_work_handler);
   k_work_init(&button2_work, button2_work_handler);
   k_work_init(&button3_work, button3_work_handler);
+  k_work_init_delayable(&flash_write_work, flash_write_work_handler);
+  k_work_init_delayable(&flash_timer_work, flash_timer_work_handler);
   // 注册按键回调
   button_register_callback(0, button0_callback);
   button_register_callback(1, button1_callback);
   button_register_callback(2, button2_callback);
   button_register_callback(3, button3_callback);
+
+  // 运行flash性能测试
+  flash_performance_test();
 
   LOG_INF("Starting Channel Sounding Initiator Sample");
 
@@ -950,6 +1051,12 @@ int main(void) {
   LOG_INF("cs_de_report size: %d", sizeof(cs_de_report_t));
   LOG_INF("store_cs_de_report_t size: %d", sizeof(store_cs_de_report_t));
 
+  // 启动定时刷新缓冲区
+  k_work_schedule(&flash_timer_work, K_SECONDS(10));
+
+  // // 运行flash性能测试
+  // flash_performance_test();
+
   while (true) {
     k_sleep(K_MSEC(1000));
 
@@ -964,7 +1071,10 @@ int main(void) {
       }
     }
     if (bt_cs_state == BT_CS_STATE_ENABLED) {
-      // LOG_INF("Connected, sleeping for a few seconds...");
+#ifdef TEST_RANGING_ENABLED
+      LOG_INF("CS enabled - Progress: %d/%d ranging measurements",
+              ranging_count, TEST_RANGING_COUNT);
+#endif
     }
     // LOG_INF("Sleeping for a few seconds...");
   }

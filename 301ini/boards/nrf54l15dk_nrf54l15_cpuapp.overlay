@@ -69,4 +69,5 @@
 };
 &mx25r64 {
 	status = "okay";
+
 };
