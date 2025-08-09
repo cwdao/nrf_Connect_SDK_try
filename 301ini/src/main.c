@@ -721,17 +721,17 @@ static void button0_work_handler(struct k_work *work) {
     return;
   }
   
-  // 启用CS前检查flash状态
-  LOG_INF("Checking flash status before starting CS procedures...");
+  // 启用CS前检查flash状态并自动处理
+  LOG_INF("Preparing flash for new test session...");
   int flash_check_result = flash_check_and_suggest_erase();
   
-  if (flash_check_result == 2) {  // 强烈建议擦除
-    LOG_INF("⚠️  Flash usage is high! Consider erasing flash first (Button 3 x3)");
-    LOG_INF("⚠️  Continuing anyway, but you may run out of space soon...");
-  } else if (flash_check_result == 1) {  // 建议擦除
-    LOG_INF("ℹ️  Flash has some data. You can continue or erase for clean start");
+  if (flash_check_result == -1) {  // 检查失败
+    LOG_ERR("Flash status check failed, aborting CS start");
+    return;
   }
-  // flash_check_result == 0 表示flash干净，无需提示
+  
+  // 智能设置flash写入起始位置
+  flash_smart_set_start_position();
   
   LOG_INF("Current write mode: %s", 
           FLASH_WRITE_MODE == FLASH_WRITE_MODE_SINGLE ? "SINGLE" : "BATCH");
@@ -870,7 +870,7 @@ static void button3_work_handler(struct k_work *work) {
   for (uint64_t i = 0; i < flash_size / SPI_FLASH_SECTOR_SIZE; i++) {
     led_on(1);
     err = flash_sector_needs_erase(i);
-    if (err == 1) {
+    if (err == 0) {
       LOG_INF("flash is empty, skip erase");
       break;
     }else if (err == -1) {
@@ -957,9 +957,6 @@ int main(void) {
   // 运行flash性能测试
   flash_performance_test();
   flash_check_and_suggest_erase();
-  // 打印缓冲区大小信息
-  LOG_INF("Buffer sizes - LOCAL_PROCEDURE_MEM: %d bytes, BT_RAS_PROCEDURE_MEM: %d bytes",
-          LOCAL_PROCEDURE_MEM, BT_RAS_PROCEDURE_MEM);
 
   LOG_INF("Starting Channel Sounding Initiator Sample");
 

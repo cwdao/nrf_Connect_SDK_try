@@ -306,13 +306,18 @@ int flash_sector_needs_erase(uint64_t sector_index) {
   int err = flash_read(flash_dev, sector_index * SPI_FLASH_SECTOR_SIZE, &erase_tmp,
     sizeof(store_cs_de_report_t));
   if (err) {
-    // LOG_ERR("Flash read failed: %d", err);
+    LOG_ERR("Flash read failed when checking sector %llu: %d", sector_index, err);
     return -1;
   }
+  
+  // 如果扇区是空的（所有位都是1），则不需要擦除
   if (erase_tmp.report_index == 0xFFFFFFFFFFFFFFFF) {
-    return 1;
-  }else{
-    return 0;
+    // LOG_DBG("Sector %llu is empty, no erase needed", sector_index);
+    return 0;  // 不需要擦除
+  } else {
+    // LOG_DBG("Sector %llu has data (index: %llu), needs erase", 
+    //         sector_index, erase_tmp.report_index);
+    return 1;  // 需要擦除
   }
 }
 
@@ -467,6 +472,11 @@ int flash_write_single_report(const store_cs_de_report_t *report) {
   LOG_DBG("Writing single report - Index: %llu, Timestamp: %llu", 
           current_index, report->timestamp_ms);
   
+  // 计算扇区信息用于调试
+  uint64_t sector_index = current_index / RECORDS_PER_SECTOR;
+  uint64_t offset_in_sector = (current_index % RECORDS_PER_SECTOR) * sizeof(store_cs_de_report_t);
+  LOG_DBG("Target: Sector %llu, Offset %llu", sector_index, offset_in_sector);
+  
   int err = flash_write_data_compact(flash_dev, current_index, 
                                      report, sizeof(store_cs_de_report_t));
   if (err) {
@@ -477,48 +487,109 @@ int flash_write_single_report(const store_cs_de_report_t *report) {
   // 成功写入后递增索引
   flash_ops_increment_index();
   
-  LOG_DBG("Single flash write successful - Index: %llu", current_index);
+  // LOG_DBG("Single flash write successful - Index: %llu", current_index);
   return 0;
 }
 
-// Flash状态检查函数 - 检查是否需要擦除并给出建议
+// Flash状态检查函数 - 测试模式下自动处理flash状态
 int flash_check_and_suggest_erase(void) {
   uint64_t flash_size = flash_ops_get_size();
-  uint64_t current_index = flash_ops_get_index();
   uint64_t total_sectors = flash_size / SPI_FLASH_SECTOR_SIZE;
   uint64_t used_sectors = 0;
-  
-  LOG_INF("=== Flash Status Check ===");
-  LOG_INF("Current flash index: %llu", current_index);
-  LOG_INF("Flash size: %llu bytes (%llu sectors)", flash_size, total_sectors);
+  uint64_t erased_sectors = 0;
+  int erase_errors = 0;
   
   // 检查已使用的扇区数
   for (uint64_t sector = 0; sector < total_sectors; sector++) {
     int erase_status = flash_sector_needs_erase(sector);
-    if (erase_status == 0) {  // 扇区有数据
+    if (erase_status == 1) {  // 扇区有数据
       used_sectors++;
+      int err = flash_erase(flash_dev, sector * SPI_FLASH_SECTOR_SIZE, SPI_FLASH_SECTOR_SIZE);
+      if (err) {
+        LOG_ERR("Failed to erase sector %llu: %d", sector, err);
+        erase_errors++;
+      } else {
+        LOG_DBG("Sector %llu has data, Erased.", sector);
+        erased_sectors ++;
+      }
     } else if (erase_status == -1) {  // 读取错误
       LOG_ERR("Flash read error at sector %llu", sector);
       return -1;
     }
-    // erase_status == 1 表示扇区为空
+    // erase_status == 0 表示扇区为空
+    LOG_INF("Sector %llu is empty.", sector);
   }
   
-  LOG_INF("Used sectors: %llu / %llu (%.1f%%)", 
+  // 如果flash是空的，不输出信息，直接返回
+  if (used_sectors == 0) {
+    return 0;  // Flash干净，无需处理
+  }
+  
+  // 如果有数据，在测试模式下自动擦除
+  LOG_INF("🔍 Flash contains data (%llu/%llu sectors used, %.1f%%)", 
           used_sectors, total_sectors, 
           (double)used_sectors / total_sectors * 100.0);
+  LOG_INF("Erased sectors: %llu", erased_sectors);
   
-  // 给出建议
-  if (used_sectors == 0) {
-    LOG_INF("✅ Flash is clean, ready for use");
-    return 0;  // 不需要擦除
-  } else if (used_sectors < total_sectors / 2) {  // 使用率 < 50%
-    LOG_INF("⚠️  Flash has some data but usage is low");
-    LOG_INF("💡 Suggestion: You can continue or erase for clean start");
-    return 1;  // 建议擦除但不强制
-  } else {  // 使用率 >= 50%
-    LOG_INF("🚨 Flash usage is high (%llu sectors used)", used_sectors);
-    LOG_INF("💡 Strong suggestion: Erase flash before starting new measurements");
-    return 2;  // 强烈建议擦除
+  // 擦除所有已使用的扇区
+  // int erase_errors = 0;
+  // for (uint64_t sector = 0; sector < total_sectors; sector++) {
+  //   int erase_status = flash_sector_needs_erase(sector);
+  //   if (erase_status == 0) {  // 扇区有数据，需要擦除
+  //     int err = flash_erase(flash_dev, sector * SPI_FLASH_SECTOR_SIZE, SPI_FLASH_SECTOR_SIZE);
+  //     if (err) {
+  //       LOG_ERR("Failed to erase sector %llu: %d", sector, err);
+  //       erase_errors++;
+  //     } else {
+  //       LOG_DBG("Erased sector %llu", sector);
+  //     }
+  //   }
+  // }
+  
+  if (erase_errors == 0) {
+    LOG_INF("✅ Flash erased successfully, ready for new test");
+    // 重置flash索引到开头
+    flash_index = 0;
+    return 0;  // 成功擦除
+  } else {
+    LOG_ERR("❌ Flash erase completed with %d errors", erase_errors);
+    return -1;  // 擦除有错误
   }
+}
+
+// 智能设置flash写入起始位置
+void flash_smart_set_start_position(void) {
+  uint64_t flash_size = flash_ops_get_size();
+  uint64_t total_records = flash_size / sizeof(store_cs_de_report_t);
+  uint64_t last_valid_index = 0;
+  bool found_data = false;
+  
+  LOG_INF("🔍 Scanning flash to determine start position...");
+  
+  // 从后往前扫描，找到最后一个有效数据的位置
+  for (int64_t index = total_records - 1; index >= 0; index--) {
+    store_cs_de_report_t temp_record;
+    int err = flash_read_data_compact(flash_dev, index, &temp_record, sizeof(store_cs_de_report_t));
+    
+    if (err == 0 && temp_record.report_index != 0xFFFFFFFFFFFFFFFF) {
+      // 找到有效数据
+      last_valid_index = index;
+      found_data = true;
+      LOG_INF("📍 Found last valid data at index %llu (report_index: %llu)", 
+              index, temp_record.report_index);
+      break;
+    }
+  }
+  
+  if (found_data) {
+    // 从最后一个有效数据的下一个位置开始写入
+    flash_index = last_valid_index + 1;
+    LOG_INF("📝 Continuing from index %llu (after existing data)", flash_index);
+  } else {
+    // 没有找到有效数据，从头开始
+    flash_index = 0;
+    LOG_INF("📝 No existing data found, starting from index 0");
+  }
+  
+  LOG_INF("✅ Flash start position set to: %llu", flash_index);
 }

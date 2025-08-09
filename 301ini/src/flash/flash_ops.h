@@ -87,6 +87,9 @@ int flash_write_single_report(const store_cs_de_report_t *report);
 // Flash状态检查函数
 int flash_check_and_suggest_erase(void);
 
+// 智能设置flash写入起始位置
+void flash_smart_set_start_position(void);
+
 // 兼容性函数（保持向后兼容）
 int flash_write_data(const struct device *flash_dev, uint64_t index,
                      const void *data, size_t size);
