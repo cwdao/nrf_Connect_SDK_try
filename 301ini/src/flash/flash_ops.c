@@ -268,8 +268,8 @@ int flash_write_data_compact(const struct device *flash_dev, uint64_t index,
   // 计算扇区索引和偏移
   calculate_sector_and_offset(index, &sector_index, &offset_in_sector);
 
-  // 如果是扇区的第一个记录，需要先擦除扇区
-  if (offset_in_sector == 0) {
+  // 如果是扇区的第一个记录，需要先考虑擦除扇区。首先读取第一个数据，如果report_index为FF，则说明扇区是空的，需要擦除扇区
+  if (offset_in_sector == 0 && flash_sector_needs_erase(sector_index) == 1) {
     LOG_INF("Erasing sector %llu for new sector", sector_index);
     err = flash_erase(flash_dev, sector_index * SPI_FLASH_SECTOR_SIZE,
                       SPI_FLASH_SECTOR_SIZE);
@@ -298,6 +298,22 @@ int flash_write_data_compact(const struct device *flash_dev, uint64_t index,
   }
 
   return err;
+}
+
+// 检查扇区是否需要擦除
+int flash_sector_needs_erase(uint64_t sector_index) {
+  static store_cs_de_report_t erase_tmp;
+  int err = flash_read(flash_dev, sector_index * SPI_FLASH_SECTOR_SIZE, &erase_tmp,
+    sizeof(store_cs_de_report_t));
+  if (err) {
+    // LOG_ERR("Flash read failed: %d", err);
+    return -1;
+  }
+  if (erase_tmp.report_index == 0xFFFFFFFFFFFFFFFF) {
+    return 1;
+  }else{
+    return 0;
+  }
 }
 
 // 紧凑存储的读取函数

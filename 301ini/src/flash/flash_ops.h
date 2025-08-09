@@ -73,6 +73,8 @@ int flash_write_data_compact(const struct device *flash_dev, uint64_t index,
 int flash_read_data_compact(const struct device *flash_dev, uint64_t index, 
                           void *data, size_t size);
 int flash_erase_sector_if_needed(const struct device *flash_dev, uint64_t index);
+// 检查当前扇区是否有我们存储的数据，如果有，则返回1
+int flash_sector_needs_erase(uint64_t sector_index);
 
 // 兼容性函数（保持向后兼容）
 int flash_write_data(const struct device *flash_dev, uint64_t index,

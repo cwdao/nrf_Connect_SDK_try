@@ -85,12 +85,7 @@ static const uint32_t TEST_RANGING_COUNT = 25; // 测试测距次数
 // 增加缓冲区大小，提高数据存储能力，乘不乘2好像都没用……
 #define LOCAL_PROCEDURE_MEM                                                    \
   ((BT_RAS_MAX_STEPS_PER_PROCEDURE * sizeof(struct bt_le_cs_subevent_step)) +  \
-   (BT_RAS_MAX_STEPS_PER_PROCEDURE * BT_RAS_MAX_STEP_DATA_LEN) * 2)  // 增加2倍
-
-// 为peer steps定义更大的缓冲区
-#define BT_RAS_PROCEDURE_MEM_CUSTOM                                           \
-  ((BT_RAS_MAX_STEPS_PER_PROCEDURE * sizeof(struct bt_le_cs_subevent_step)) +  \
-   (BT_RAS_MAX_STEPS_PER_PROCEDURE * BT_RAS_MAX_STEP_DATA_LEN) * 2)  // 增加2倍
+   (BT_RAS_MAX_STEPS_PER_PROCEDURE * BT_RAS_MAX_STEP_DATA_LEN)) 
 
 static K_SEM_DEFINE(sem_remote_capabilities_obtained, 0, 1);
 static K_SEM_DEFINE(sem_config_created, 0, 1);
@@ -105,7 +100,7 @@ static K_MUTEX_DEFINE(distance_estimate_buffer_mutex);
 
 static struct bt_conn *connection;
 NET_BUF_SIMPLE_DEFINE_STATIC(latest_local_steps, LOCAL_PROCEDURE_MEM);
-NET_BUF_SIMPLE_DEFINE_STATIC(latest_peer_steps, BT_RAS_PROCEDURE_MEM_CUSTOM);
+NET_BUF_SIMPLE_DEFINE_STATIC(latest_peer_steps, BT_RAS_PROCEDURE_MEM);
 static int32_t most_recent_local_ranging_counter = PROCEDURE_COUNTER_NONE;
 static int32_t dropped_ranging_counter = PROCEDURE_COUNTER_NONE;
 
@@ -147,12 +142,12 @@ static struct bt_le_cs_create_config_params config_params = {
 // 测距参数：interval应该是最核心的一个。假设一个procedure是50ms，那么采样间隔就是间隔N个50ms
 static const struct bt_le_cs_set_procedure_parameters_param procedure_params = {
     .config_id = CS_CONFIG_ID,
-    .max_procedure_len = 1000,
+    .max_procedure_len = 500,
     .min_procedure_interval = 1,
-    .max_procedure_interval = 6,
+    .max_procedure_interval = 5,
     .max_procedure_count = 0,
     .min_subevent_len = 10000,
-    .max_subevent_len = 60000,
+    .max_subevent_len = 50000,
     .tone_antenna_config_selection = BT_LE_CS_TONE_ANTENNA_CONFIGURATION_A1_B1,
     .phy = BT_LE_CS_PROCEDURE_PHY_1M,
     .tx_power_delta = 0x80,
@@ -789,11 +784,12 @@ static void button3_work_handler(struct k_work *work) {
   uint64_t flash_size = flash_ops_get_size();
   for (uint64_t i = 0; i < flash_size / SPI_FLASH_SECTOR_SIZE; i++) {
     led_on(1);
-    err = flash_read(flash_dev, i * SPI_FLASH_SECTOR_SIZE, &record,
-                     sizeof(store_cs_de_report_t));
-    // 何谓擦除？全填充0xFF。因此这在无符号数中就是-1
-    if (0xFFFFFFFFFFFFFFFF == record.report_index) {
-      LOG_INF("flash is empty");
+    err = flash_sector_needs_erase(i);
+    if (err == 1) {
+      LOG_INF("flash is empty, skip erase");
+      break;
+    }else if (err == -1) {
+      LOG_ERR("try erase but flash read failed: %d", err);
       break;
     }
     LOG_INF("start earse flash %llu", i);
@@ -877,8 +873,8 @@ int main(void) {
   flash_performance_test();
   
   // 打印缓冲区大小信息
-  LOG_INF("Buffer sizes - LOCAL_PROCEDURE_MEM: %d bytes, BT_RAS_PROCEDURE_MEM_CUSTOM: %d bytes",
-          LOCAL_PROCEDURE_MEM, BT_RAS_PROCEDURE_MEM_CUSTOM);
+  LOG_INF("Buffer sizes - LOCAL_PROCEDURE_MEM: %d bytes, BT_RAS_PROCEDURE_MEM: %d bytes",
+          LOCAL_PROCEDURE_MEM, BT_RAS_PROCEDURE_MEM);
 
   LOG_INF("Starting Channel Sounding Initiator Sample");
 
