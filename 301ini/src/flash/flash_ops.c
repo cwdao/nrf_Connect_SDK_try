@@ -454,3 +454,71 @@ void flash_performance_test(void) {
   flash_index = test_start_index;
   LOG_INF("Flash performance test completed and cleaned up");
 }
+
+// 单个写入函数 - 直接写入一个report到flash，不经过缓冲区
+int flash_write_single_report(const store_cs_de_report_t *report) {
+  if (!report) {
+    LOG_ERR("Invalid report pointer");
+    return -1;
+  }
+  
+  uint64_t current_index = flash_ops_get_index();
+  
+  LOG_DBG("Writing single report - Index: %llu, Timestamp: %llu", 
+          current_index, report->timestamp_ms);
+  
+  int err = flash_write_data_compact(flash_dev, current_index, 
+                                     report, sizeof(store_cs_de_report_t));
+  if (err) {
+    LOG_ERR("Single flash write failed at index %llu: %d", current_index, err);
+    return err;
+  }
+  
+  // 成功写入后递增索引
+  flash_ops_increment_index();
+  
+  LOG_DBG("Single flash write successful - Index: %llu", current_index);
+  return 0;
+}
+
+// Flash状态检查函数 - 检查是否需要擦除并给出建议
+int flash_check_and_suggest_erase(void) {
+  uint64_t flash_size = flash_ops_get_size();
+  uint64_t current_index = flash_ops_get_index();
+  uint64_t total_sectors = flash_size / SPI_FLASH_SECTOR_SIZE;
+  uint64_t used_sectors = 0;
+  
+  LOG_INF("=== Flash Status Check ===");
+  LOG_INF("Current flash index: %llu", current_index);
+  LOG_INF("Flash size: %llu bytes (%llu sectors)", flash_size, total_sectors);
+  
+  // 检查已使用的扇区数
+  for (uint64_t sector = 0; sector < total_sectors; sector++) {
+    int erase_status = flash_sector_needs_erase(sector);
+    if (erase_status == 0) {  // 扇区有数据
+      used_sectors++;
+    } else if (erase_status == -1) {  // 读取错误
+      LOG_ERR("Flash read error at sector %llu", sector);
+      return -1;
+    }
+    // erase_status == 1 表示扇区为空
+  }
+  
+  LOG_INF("Used sectors: %llu / %llu (%.1f%%)", 
+          used_sectors, total_sectors, 
+          (double)used_sectors / total_sectors * 100.0);
+  
+  // 给出建议
+  if (used_sectors == 0) {
+    LOG_INF("✅ Flash is clean, ready for use");
+    return 0;  // 不需要擦除
+  } else if (used_sectors < total_sectors / 2) {  // 使用率 < 50%
+    LOG_INF("⚠️  Flash has some data but usage is low");
+    LOG_INF("💡 Suggestion: You can continue or erase for clean start");
+    return 1;  // 建议擦除但不强制
+  } else {  // 使用率 >= 50%
+    LOG_INF("🚨 Flash usage is high (%llu sectors used)", used_sectors);
+    LOG_INF("💡 Strong suggestion: Erase flash before starting new measurements");
+    return 2;  // 强烈建议擦除
+  }
+}

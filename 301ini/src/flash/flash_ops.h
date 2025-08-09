@@ -24,6 +24,11 @@
 #define FLASH_WRITE_CHUNK_SIZE 3   // 每次写入3个记录（1个扇区）
 #define FLASH_WRITE_CHUNK_DELAY_MS 50  // 每次写入后延迟50ms
 
+// 写入模式配置
+#define FLASH_WRITE_MODE_SINGLE 0    // 单个写入模式
+#define FLASH_WRITE_MODE_BATCH  1    // 批量写入模式
+#define FLASH_WRITE_MODE FLASH_WRITE_MODE_SINGLE  // 当前使用的写入模式
+
 // 获取 Flash 设备
 extern const struct device *flash_dev;
 
@@ -75,6 +80,12 @@ int flash_read_data_compact(const struct device *flash_dev, uint64_t index,
 int flash_erase_sector_if_needed(const struct device *flash_dev, uint64_t index);
 // 检查当前扇区是否有我们存储的数据，如果有，则返回1
 int flash_sector_needs_erase(uint64_t sector_index);
+
+// 单个写入函数
+int flash_write_single_report(const store_cs_de_report_t *report);
+
+// Flash状态检查函数
+int flash_check_and_suggest_erase(void);
 
 // 兼容性函数（保持向后兼容）
 int flash_write_data(const struct device *flash_dev, uint64_t index,
