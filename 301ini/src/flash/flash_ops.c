@@ -281,8 +281,8 @@ int flash_write_data_compact(const struct device *flash_dev, uint64_t index,
   }
 
   // 写入数据到指定位置
-  LOG_INF("Writing to Flash - Sector: %llu, Offset: %llu, Size: %d",
-          sector_index, offset_in_sector, size);
+  // LOG_INF("Writing to Flash - Sector: %llu, Offset: %llu, Size: %d",
+  //         sector_index, offset_in_sector, size);
 
   err = flash_write(flash_dev,
                     sector_index * SPI_FLASH_SECTOR_SIZE + offset_in_sector,
@@ -290,11 +290,11 @@ int flash_write_data_compact(const struct device *flash_dev, uint64_t index,
   if (err) {
     LOG_ERR("Flash write failed: %d", err);
   } else {
-    LOG_INF("Flash write successful - Index: %llu", index);
+    // LOG_INF("Flash write successful - Index: %llu", index);
     // 打印写入数据的timestamp以确保成功
-    LOG_INF("->> flash write, time: %llu, idx: %llu",
-            ((store_cs_de_report_t *)data)->timestamp_ms,
-            ((store_cs_de_report_t *)data)->report_index);
+    // LOG_INF("->> flash write, time: %llu, idx: %llu",
+    //         ((store_cs_de_report_t *)data)->timestamp_ms,
+    //         ((store_cs_de_report_t *)data)->report_index);
   }
 
   return err;
@@ -469,13 +469,13 @@ int flash_write_single_report(const store_cs_de_report_t *report) {
   
   uint64_t current_index = flash_ops_get_index();
   
-  LOG_DBG("Writing single report - Index: %llu, Timestamp: %llu", 
-          current_index, report->timestamp_ms);
+  // LOG_DBG("Writing single report - Index: %llu, Timestamp: %llu", 
+  //         current_index, report->timestamp_ms);
   
   // 计算扇区信息用于调试
-  uint64_t sector_index = current_index / RECORDS_PER_SECTOR;
-  uint64_t offset_in_sector = (current_index % RECORDS_PER_SECTOR) * sizeof(store_cs_de_report_t);
-  LOG_DBG("Target: Sector %llu, Offset %llu", sector_index, offset_in_sector);
+  // uint64_t sector_index = current_index / RECORDS_PER_SECTOR;
+  // uint64_t offset_in_sector = (current_index % RECORDS_PER_SECTOR) * sizeof(store_cs_de_report_t);
+  // LOG_DBG("Target: Sector %llu, Offset %llu", sector_index, offset_in_sector);
   
   int err = flash_write_data_compact(flash_dev, current_index, 
                                      report, sizeof(store_cs_de_report_t));
