@@ -150,7 +150,7 @@ static const struct bt_le_cs_set_procedure_parameters_param procedure_params = {
     .config_id = CS_CONFIG_ID,
     .max_procedure_len = 500,
     .min_procedure_interval = 1,
-    .max_procedure_interval = 5,
+    .max_procedure_interval = 6,
     .max_procedure_count = 0,
     .min_subevent_len = 10000,
     .max_subevent_len = 50000, // 这个就是us
@@ -818,7 +818,7 @@ static void button2_work_handler(struct k_work *work) {
     }
     LOG_INF("Read Flash data - Idx: %llu, Tstp: %llu ms", record.report_index,
             record.timestamp_ms);
-    print_store_cs_de_report(&record, 10);
+    print_store_cs_de_report(&record, 80);
     // _debug_print_report(&record);
   }
   LOG_INF("Flash read finished.");
