@@ -39,6 +39,8 @@ static struct k_work button2_work;
 static struct k_work button3_work;
 // 定义flash写入工作队列
 static struct k_work_delayable flash_write_work;
+// 定义单次flash写入工作队列
+static struct k_work flash_single_write_work;
 // 定义定时刷新缓冲区的工作队列
 static struct k_work_delayable flash_timer_work;
 // 指示蓝牙连接状态
@@ -148,10 +150,10 @@ static const struct bt_le_cs_set_procedure_parameters_param procedure_params = {
     .config_id = CS_CONFIG_ID,
     .max_procedure_len = 500,
     .min_procedure_interval = 1,
-    .max_procedure_interval = 6,
+    .max_procedure_interval = 5,
     .max_procedure_count = 0,
     .min_subevent_len = 10000,
-    .max_subevent_len = 50000,
+    .max_subevent_len = 50000,//这个就是us
     .tone_antenna_config_selection = BT_LE_CS_TONE_ANTENNA_CONFIGURATION_A1_B1,
     .phy = BT_LE_CS_PROCEDURE_PHY_2M,
     .tx_power_delta = 0x80,
@@ -230,6 +232,7 @@ static cs_de_dist_estimates_t get_distance(uint8_t ap) {
 
 // 每次取到一个样本，就给一个全局标号
 static __IO uint64_t cs_data_index = 0;
+static store_cs_de_report_t temp_flash_data;
 static void ranging_data_get_complete_cb(struct bt_conn *conn,
                                          uint16_t ranging_counter, int err) {
   ARG_UNUSED(conn);
@@ -298,23 +301,17 @@ static void ranging_data_get_complete_cb(struct bt_conn *conn,
   }
   if (flash_state == FLASH_STATE_IDLE) {
     // 准备数据结构
-    static store_cs_de_report_t temp_data;
-    temp_data.report_index = cs_data_index;
-    temp_data.timestamp_ms = report_timestamp_ms;
-    memcpy(&temp_data.report, &cs_de_report, sizeof(cs_de_report_t));
+
+    temp_flash_data.report_index = cs_data_index;
+    temp_flash_data.timestamp_ms = report_timestamp_ms;
+    memcpy(&temp_flash_data.report, &cs_de_report, sizeof(cs_de_report_t));
 
     cs_data_index++; // 无论写入模式如何，都递增编号确保连续性
 
 #if FLASH_WRITE_MODE == FLASH_WRITE_MODE_SINGLE
-    // 单个写入模式 - 直接写入flash
-    LOG_DBG("Using single write mode");
-    int err = flash_write_single_report(&temp_data);
-    if (err) {
-      LOG_ERR("Single flash write failed: %d", err);
-    } else {
-      LOG_DBG("Single write successful - Idx: %llu, Time: %llu",
-              temp_data.report_index, temp_data.timestamp_ms);
-    }
+    // 单个写入模式 - 使用k_work异步写入flash
+    // LOG_DBG("Using single write mode with k_work");
+    k_work_submit(&flash_single_write_work);
 #else
     // 批量写入模式 - 使用环形缓冲区
     LOG_DBG("Using batch write mode");
@@ -897,6 +894,24 @@ static void button3_work_handler(struct k_work *work) {
 }
 
 // Flash写入工作队列处理函数
+// 单次flash写入的工作队列处理函数
+static void flash_single_write_work_handler(struct k_work *work) {
+  ARG_UNUSED(work);
+
+  flash_state = FLASH_STATE_DATA_WRITING;
+
+  LOG_DBG("Using single write mode");
+  int err = flash_write_single_report(&temp_flash_data);
+  if (err) {
+    LOG_ERR("Single flash write failed: %d", err);
+  } else {
+    LOG_DBG("Single write successful - Idx: %llu, Time: %llu",
+      temp_flash_data.report_index, temp_flash_data.timestamp_ms);
+  }
+
+  flash_state = FLASH_STATE_IDLE;
+}
+
 static void flash_write_work_handler(struct k_work *work) {
   ARG_UNUSED(work);
 
@@ -954,6 +969,7 @@ int main(void) {
   k_work_init(&button1_work, button1_work_handler);
   k_work_init(&button2_work, button2_work_handler);
   k_work_init(&button3_work, button3_work_handler);
+  k_work_init(&flash_single_write_work, flash_single_write_work_handler);
   k_work_init_delayable(&flash_write_work, flash_write_work_handler);
   k_work_init_delayable(&flash_timer_work, flash_timer_work_handler);
   // 注册按键回调

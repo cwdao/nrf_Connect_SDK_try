@@ -610,8 +610,8 @@ int main(void) {
   const struct bt_le_cs_set_procedure_parameters_param procedure_params = {
       .config_id = CS_CONFIG_ID,
       .max_procedure_len = 1000,
-      .min_procedure_interval = 10,
-      .max_procedure_interval = 10,
+      .min_procedure_interval = 1,
+      .max_procedure_interval = 5,
       .max_procedure_count = 0,
       .min_subevent_len = 60000,
       .max_subevent_len = 60000,
