@@ -153,7 +153,7 @@ static const struct bt_le_cs_set_procedure_parameters_param procedure_params = {
     .max_procedure_interval = 5,
     .max_procedure_count = 0,
     .min_subevent_len = 10000,
-    .max_subevent_len = 50000,//这个就是us
+    .max_subevent_len = 50000, // 这个就是us
     .tone_antenna_config_selection = BT_LE_CS_TONE_ANTENNA_CONFIGURATION_A1_B1,
     .phy = BT_LE_CS_PROCEDURE_PHY_2M,
     .tx_power_delta = 0x80,
@@ -816,9 +816,10 @@ static void button2_work_handler(struct k_work *work) {
       LOG_ERR("Flash read error at %llu: %d", i, err);
       break;
     }
-    LOG_INF("Read data - Idx: %llu, Tstp: %llu ms", record.report_index,
+    LOG_INF("Read Flash data - Idx: %llu, Tstp: %llu ms", record.report_index,
             record.timestamp_ms);
-    _debug_print_report(&record);
+    print_store_cs_de_report(&record, 10);
+    // _debug_print_report(&record);
   }
   LOG_INF("Flash read finished.");
   bt_cs_state = BT_CS_STATE_IDLE;
@@ -906,7 +907,7 @@ static void flash_single_write_work_handler(struct k_work *work) {
     LOG_ERR("Single flash write failed: %d", err);
   } else {
     LOG_DBG("Single write successful - Idx: %llu, Time: %llu",
-      temp_flash_data.report_index, temp_flash_data.timestamp_ms);
+            temp_flash_data.report_index, temp_flash_data.timestamp_ms);
   }
 
   flash_state = FLASH_STATE_IDLE;
