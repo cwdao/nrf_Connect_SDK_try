@@ -13,5 +13,8 @@ void store_cs_de_report(cs_de_report_t *p_report);
 void print_report(const cs_de_report_t *r, int max_output_channels);
 void print_store_cs_de_report(const store_cs_de_report_t *s,
                               int max_output_channels);
+void print_store_cs_de_report_basic(const store_cs_de_report_t *s,
+                                   int max_output_channels);
+void print_report_fast(const cs_de_report_t *r, int max_output_channels);
 
 #endif

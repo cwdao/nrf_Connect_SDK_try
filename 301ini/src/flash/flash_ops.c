@@ -42,6 +42,7 @@ void flash_ops_increment_index(void) { flash_index++; }
 // 获取flash大小
 uint64_t flash_ops_get_size(void) { return flash_size; }
 
+#if FLASH_WRITE_MODE == FLASH_WRITE_MODE_BATCH
 // 环形缓冲区初始化
 int flash_buffer_init(void) {
   memset(&flash_buffer, 0, sizeof(flash_buffer));
@@ -129,7 +130,7 @@ int flash_buffer_flush(void) {
   LOG_INF("Successfully flushed %d records to flash", records_to_write);
   return 0;
 }
-
+#endif
 // 分片写入flash - 每次只写入一小部分，避免长时间阻塞
 int flash_buffer_flush_chunked(void) {
   if (flash_buffer.count == 0) {
@@ -265,6 +266,16 @@ int flash_write_data_compact(const struct device *flash_dev, uint64_t index,
   uint64_t sector_index, offset_in_sector;
   int err;
 
+  // 检查闪存容量边界
+  uint64_t flash_size = flash_ops_get_size();
+  uint64_t max_records = flash_size / RECORD_SIZE;
+  
+  if (index >= max_records) {
+    LOG_ERR("Flash write boundary exceeded! Index: %llu, Max records: %llu", 
+            index, max_records);
+    return -1;  // 返回错误，表示超出边界
+  }
+
   // 计算扇区索引和偏移
   calculate_sector_and_offset(index, &sector_index, &offset_in_sector);
 
@@ -344,7 +355,7 @@ void flash_init(const struct device *flash_dev) {
   }
   flash_get_size(flash_dev, &flash_size);
   // 8M 2616 bytes
-  LOG_INF("==> SPI flash[%s] Ready: %lldMB rec:%d", flash_dev->name,
+  LOG_INF("==> SPI flash[%s] Ready: %lldMB Record Size:%d", flash_dev->name,
           flash_size / (1024 * 1024), sizeof(cs_de_report_t));
   LOG_INF("Records per sector: %d, Record size: %d bytes", RECORDS_PER_SECTOR,
           RECORD_SIZE);
@@ -369,9 +380,10 @@ void flash_init(const struct device *flash_dev) {
     LOG_INF("Flash write block size: %d bytes", params->write_block_size);
     LOG_INF("Flash erase value: 0x%02X", params->erase_value);
   }
-
+#if FLASH_WRITE_MODE == FLASH_WRITE_MODE_BATCH
   // 初始化环形缓冲区
   flash_buffer_init();
+#endif
 }
 
 // 兼容性函数（保持向后兼容）
@@ -499,6 +511,13 @@ int flash_check_and_suggest_erase(void) {
   uint64_t erased_sectors = 0;
   int erase_errors = 0;
   
+  // 进度条相关变量
+  const uint64_t progress_step = 256;  // 每64个扇区更新一次进度条
+  const uint64_t max_progress_bars = 16;  // 最大32个进度条字符
+  uint64_t last_progress_sector = 0;
+  
+  LOG_INF("🔍 Scanning %llu sectors...", total_sectors);
+  
   // 检查已使用的扇区数
   for (uint64_t sector = 0; sector < total_sectors; sector++) {
     int erase_status = flash_sector_needs_erase(sector);
@@ -517,7 +536,24 @@ int flash_check_and_suggest_erase(void) {
       return -1;
     }
     // erase_status == 0 表示扇区为空
-    LOG_INF("Sector %llu is empty.", sector);
+    
+    // 更新进度条
+    if (sector - last_progress_sector >= progress_step || sector == total_sectors - 1) {
+      uint64_t progress_bars = (sector + 1) * max_progress_bars / total_sectors;
+      if (progress_bars > max_progress_bars) {
+        progress_bars = max_progress_bars;
+      }
+      
+      // 构建进度条字符串
+      char progress_str[33] = {0};  // 32个字符 + 结束符
+      for (uint64_t i = 0; i < progress_bars; i++) {
+        progress_str[i] = '>';
+      }
+      
+      uint64_t percentage = (sector + 1) * 100 / total_sectors;
+      LOG_INF("[%s] %llu%% (%llu/%llu sectors)", progress_str, percentage, sector + 1, total_sectors);
+      last_progress_sector = sector;
+    }
   }
   
   // 如果flash是空的，不输出信息，直接返回
