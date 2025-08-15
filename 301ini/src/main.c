@@ -6,6 +6,13 @@
 
 /** @file
  *  @brief Channel Sounding Initiator with Ranging Requestor sample
+ *  @author Cheng Wang, cwang199@connect.hkust-gz.edu.cn;
+ *  @date 2025-08-15
+ *  @version 1.0
+ *  @note This project is modified from Nordic Connect SDK Channel Sounding
+ *        sample.
+ *       Flash storage and key operations are referenced from taki_tooru@163.com
+
  */
 
 #include <bluetooth/cs_de.h>
@@ -84,7 +91,6 @@ static const uint32_t TEST_RANGING_COUNT = 25; // 测试测距次数
 #endif
 
 #define NEED_LOG 0 // 是否需要信息输出（用于提升速度）
-
 
 #define CON_STATUS_LED DK_LED1
 
@@ -578,13 +584,13 @@ static void connected_cb(struct bt_conn *conn, uint8_t err) {
 
   // 检查连接间隔参数
   struct bt_conn_info info = {0};
-	err = bt_conn_get_info(conn, &info);
-	if (err) {
-		LOG_ERR("Failed to get connection info %d", err);
-		return;
-	}
+  err = bt_conn_get_info(conn, &info);
+  if (err) {
+    LOG_ERR("Failed to get connection info %d", err);
+    return;
+  }
 
-	LOG_INF("Conn. interval is %u units", info.le.interval);
+  LOG_INF("Conn. interval is %u units", info.le.interval);
 }
 
 static void disconnected_cb(struct bt_conn *conn, uint8_t reason) {
