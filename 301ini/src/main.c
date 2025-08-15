@@ -575,6 +575,16 @@ static void connected_cb(struct bt_conn *conn, uint8_t err) {
   LOG_INF("Now connected, scanning stopped");
 
   dk_set_led_on(CON_STATUS_LED);
+
+  // 检查连接间隔参数
+  struct bt_conn_info info = {0};
+	err = bt_conn_get_info(conn, &info);
+	if (err) {
+		LOG_ERR("Failed to get connection info %d", err);
+		return;
+	}
+
+	LOG_INF("Conn. interval is %u units", info.le.interval);
 }
 
 static void disconnected_cb(struct bt_conn *conn, uint8_t reason) {
