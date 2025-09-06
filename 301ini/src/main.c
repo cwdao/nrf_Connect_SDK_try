@@ -12,7 +12,6 @@
  *  @note This project is modified from Nordic Connect SDK Channel Sounding
  *        sample.
  *       Flash storage and key operations are referenced from taki_tooru@163.com
-
  */
 
 #include <bluetooth/cs_de.h>
@@ -137,6 +136,7 @@ static const struct bt_le_cs_set_default_settings_param default_settings = {
     .enable_reflector_role = false,
     .cs_sync_antenna_selection = BT_LE_CS_ANTENNA_SELECTION_OPT_REPETITIVE,
     .max_tx_power = BT_HCI_OP_LE_CS_MAX_MAX_TX_POWER,
+    // .max_tx_power = 0,
 };
 
 // 创建CS配置参数，步骤类型，信道选择等等。传给bt_le_cs_create_config
