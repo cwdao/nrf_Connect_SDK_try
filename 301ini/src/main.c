@@ -162,7 +162,7 @@ static const struct bt_le_cs_set_procedure_parameters_param procedure_params = {
     .config_id = CS_CONFIG_ID,
     .max_procedure_len = 500,
     .min_procedure_interval = 1,
-    .max_procedure_interval = 6,
+    .max_procedure_interval = 10,
     .max_procedure_count = 0,
     .min_subevent_len = 10000,
     .max_subevent_len = 50000, // 这个就是us
@@ -320,14 +320,18 @@ static void ranging_data_get_complete_cb(struct bt_conn *conn,
 
     cs_data_index++; // 无论写入模式如何，都递增编号确保连续性
 
-#if FLASH_WRITE_MODE == FLASH_WRITE_MODE_SINGLE
+#if ENABLE_DIRECT_PRINT
+    // 直接打印模式 - 测距完成后直接打印到串口，不写入flash
+    // 相当于直接调用button2的打印输出功能
+    print_store_cs_de_report_basic(&temp_flash_data, 80);
+#elif FLASH_WRITE_MODE == FLASH_WRITE_MODE_SINGLE
     // 单个写入模式 - 使用k_work异步写入flash
     // LOG_DBG("Using single write mode with k_work");
     k_work_submit(&flash_single_write_work);
 #else
     // 批量写入模式 - 使用环形缓冲区
     LOG_DBG("Using batch write mode");
-    int err = flash_buffer_put(&temp_data, sizeof(store_cs_de_report_t));
+    int err = flash_buffer_put(&temp_flash_data, sizeof(store_cs_de_report_t));
     if (err) {
       LOG_ERR("Failed to add data to buffer: %d", err);
       return;
