@@ -43,7 +43,7 @@ static struct bt_le_cs_test_param test_params_get(enum bt_conn_le_cs_role role)
 
 	memset(params.override_config_0.not_set.channel_map, 0, 10);
 
-	for (uint8_t i = 40; i < 75; i++) {
+	for (uint8_t i = 40; i < 45; i++) {
 		BT_LE_CS_CHANNEL_BIT_SET_VAL(params.override_config_0.not_set.channel_map, i, 1);
 	}
 
