@@ -162,10 +162,10 @@ static const struct bt_le_cs_set_procedure_parameters_param procedure_params = {
     .config_id = CS_CONFIG_ID,
     .max_procedure_len = 500,
     .min_procedure_interval = 1,
-    .max_procedure_interval = 3,
+    .max_procedure_interval = 7,
     .max_procedure_count = 0,
     .min_subevent_len = 10000,
-    .max_subevent_len = 50000, // 这个就是us
+    .max_subevent_len = 40000, // 这个就是us
     .tone_antenna_config_selection = BT_LE_CS_TONE_ANTENNA_CONFIGURATION_A1_B1,
     .phy = BT_LE_CS_PROCEDURE_PHY_2M,
     .tx_power_delta = 0x80,
@@ -180,15 +180,17 @@ static struct bt_le_cs_procedure_enable_param params = {
     .enable = 1,
 };
 
-uint8_t valid_channels[] = {40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55};
+uint8_t valid_channels[] = {40, 41, 42, 43, 44, 45, 46, 47,
+                            48, 49, 50, 51, 52, 53, 54, 55};
 
 static void set_custom_channel_map(uint8_t channel_map[10]) {
   // 初始化所有信道为无效（全 0）
   memset(channel_map, 0x00, 10);
 
   // 定义启用的信道集合。例如：启用信道 2、3、10、11
-  // uint8_t valid_channels[] = {40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56};
-  // uint8_t valid_channels[] = {2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2};
+  // uint8_t valid_channels[] =
+  // {40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56}; uint8_t
+  // valid_channels[] = {2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2};
 
   // 遍历启用的信道集合，将对应 bit 设置为有效
   for (size_t i = 0; i < sizeof(valid_channels) / sizeof(valid_channels[0]);
@@ -334,7 +336,15 @@ static void ranging_data_get_complete_cb(struct bt_conn *conn,
   net_buf_simple_reset(&latest_peer_steps);
   k_sem_give(&sem_local_steps);
   // 这是正儿八经算距离了
+  // uint64_t timestamp_ms_de_c_1 = k_uptime_get();
+
   cs_de_quality_t quality = cs_de_calc(&cs_de_report);
+
+  // uint64_t timestamp_ms_de_c_2 = k_uptime_get();
+  // uint64_t timestamp_ms_de_c = timestamp_ms_de_c_2 - timestamp_ms_de_c_1;
+
+  //  print time cost of cs_de_calc
+  // LOG_INF("ct: %llu", timestamp_ms_de_c);
 
   if (quality == CS_DE_QUALITY_OK) {
     for (uint8_t ap = 0; ap < cs_de_report.n_ap; ap++) {
@@ -518,9 +528,8 @@ static void ranging_data_overwritten_cb(struct bt_conn *conn,
   //   }
   // }
 #endif
-// simple overwritten report
-LOG_INF("OW!");
-
+  // simple overwritten report
+  // LOG_INF("OW!");
 }
 
 static void mtu_exchange_cb(struct bt_conn *conn, uint8_t err,
@@ -748,7 +757,20 @@ static int scan_init(void) {
                                      .conn_param = BT_LE_CONN_PARAM_DEFAULT,
                                      .connect_if_match = 1};
 
-  bt_scan_init(&param);
+
+  static struct bt_le_conn_param custom_conn_param = {
+      .interval_min = 6, // 最小连接间隔 (7.5ms)
+      .interval_max = 16, // 最大连接间隔 (7.5ms)
+      .latency = 0,      // 从设备延迟
+      .timeout = 400,    // 监督超时 (400 * 10ms = 4秒)
+  };
+
+  struct bt_scan_init_param param_on_conn = {.scan_param = NULL,
+                                     .conn_param =
+                                         &custom_conn_param, // 使用自定义参数
+                                     .connect_if_match = 1};
+
+  bt_scan_init(&param_on_conn);
   bt_scan_cb_register(&scan_cb);
   // 过滤了具有ranging service 的设备
   err = bt_scan_filter_add(BT_SCAN_FILTER_TYPE_UUID, BT_UUID_RANGING_SERVICE);
