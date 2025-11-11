@@ -162,7 +162,7 @@ static const struct bt_le_cs_set_procedure_parameters_param procedure_params = {
     .config_id = CS_CONFIG_ID,
     .max_procedure_len = 500,
     .min_procedure_interval = 1,
-    .max_procedure_interval = 10,
+    .max_procedure_interval = 3,
     .max_procedure_count = 0,
     .min_subevent_len = 10000,
     .max_subevent_len = 50000, // 这个就是us
@@ -179,6 +179,38 @@ static struct bt_le_cs_procedure_enable_param params = {
     .config_id = CS_CONFIG_ID,
     .enable = 1,
 };
+
+uint8_t valid_channels[] = {40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55};
+
+static void set_custom_channel_map(uint8_t channel_map[10]) {
+  // 初始化所有信道为无效（全 0）
+  memset(channel_map, 0x00, 10);
+
+  // 定义启用的信道集合。例如：启用信道 2、3、10、11
+  // uint8_t valid_channels[] = {40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56};
+  // uint8_t valid_channels[] = {2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2};
+
+  // 遍历启用的信道集合，将对应 bit 设置为有效
+  for (size_t i = 0; i < sizeof(valid_channels) / sizeof(valid_channels[0]);
+       i++) {
+    uint8_t channel = valid_channels[i];
+
+    // 检查信道是否在有效范围
+    if (channel > 78) {
+      printk("Invalid channel: %d\n", channel);
+      continue;
+    }
+
+    // 设置信道为有效
+    channel_map[channel / 8] |= (1 << (channel % 8));
+  }
+
+  // 如果有协议限制（如禁用信道
+  // 0、1、23、24、25、77、78），可以额外禁用这些信道
+  channel_map[0] &= ~((1 << 0) | (1 << 1));            // 禁用信道 0 和 1
+  channel_map[2] &= ~((1 << 7) | (1 << 6) | (1 << 5)); // 禁用信道 23、24、25
+  channel_map[9] &= ~((1 << 5) | (1 << 6));            // 禁用信道 77、78
+}
 
 static void store_distance_estimates(cs_de_report_t *p_report) {
   int lock_state = k_mutex_lock(&distance_estimate_buffer_mutex, K_FOREVER);
@@ -323,7 +355,7 @@ static void ranging_data_get_complete_cb(struct bt_conn *conn,
 #if ENABLE_DIRECT_PRINT
     // 直接打印模式 - 测距完成后直接打印到串口，不写入flash
     // 相当于直接调用button2的打印输出功能
-    print_store_cs_de_report_basic(&temp_flash_data, 80);
+    // print_store_cs_de_report_basic(&temp_flash_data, 80);
 #elif FLASH_WRITE_MODE == FLASH_WRITE_MODE_SINGLE
     // 单个写入模式 - 使用k_work异步写入flash
     // LOG_DBG("Using single write mode with k_work");
@@ -486,6 +518,9 @@ static void ranging_data_overwritten_cb(struct bt_conn *conn,
   //   }
   // }
 #endif
+// simple overwritten report
+LOG_INF("OW!");
+
 }
 
 static void mtu_exchange_cb(struct bt_conn *conn, uint8_t err,
@@ -1135,7 +1170,9 @@ int main(void) {
   //     .ch3c_jump = 2,
   // };
 
+  // enable custom or default channel settings
   bt_le_cs_set_valid_chmap_bits(config_params.channel_map);
+  set_custom_channel_map(config_params.channel_map);
 
   err = bt_le_cs_create_config(connection, &config_params,
                                BT_LE_CS_CREATE_CONFIG_CONTEXT_LOCAL_AND_REMOTE);
