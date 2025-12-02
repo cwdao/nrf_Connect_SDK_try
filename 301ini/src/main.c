@@ -168,7 +168,7 @@ static const struct bt_le_cs_set_procedure_parameters_param procedure_params = {
     .max_subevent_len = 40000, // 这个就是us
     .tone_antenna_config_selection = BT_LE_CS_TONE_ANTENNA_CONFIGURATION_A1_B1,
     .phy = BT_LE_CS_PROCEDURE_PHY_2M,
-    .tx_power_delta = 4, //0x80 means no power difference
+    .tx_power_delta = 0x80, //0x80 means no power difference
     .preferred_peer_antenna = BT_LE_CS_PROCEDURE_PREFERRED_PEER_ANTENNA_1,
     .snr_control_initiator = BT_LE_CS_SNR_CONTROL_NOT_USED,
     .snr_control_reflector = BT_LE_CS_SNR_CONTROL_NOT_USED,
@@ -757,7 +757,7 @@ static int scan_init(void) {
                                      .conn_param = BT_LE_CONN_PARAM_DEFAULT,
                                      .connect_if_match = 1};
 
-
+// 我添加了interval_max用于配置连接间隔，40=50ms,16=20ms
   static struct bt_le_conn_param custom_conn_param = {
       .interval_min = 6, // 最小连接间隔 (7.5ms)
       .interval_max = 40, // 最大连接间隔 (7.5ms，1.25ms unit)
@@ -1194,7 +1194,7 @@ int main(void) {
 
   // enable custom or default channel settings
   bt_le_cs_set_valid_chmap_bits(config_params.channel_map);
-  set_custom_channel_map(config_params.channel_map);
+  // set_custom_channel_map(config_params.channel_map);
 
   err = bt_le_cs_create_config(connection, &config_params,
                                BT_LE_CS_CREATE_CONFIG_CONTEXT_LOCAL_AND_REMOTE);
