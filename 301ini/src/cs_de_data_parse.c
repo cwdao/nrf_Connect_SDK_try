@@ -126,6 +126,7 @@ void print_store_cs_de_report_basic(const store_cs_de_report_t *s,
   LOG_INF("== Basic Report == index:%llu, timestamp:%llu", 
           s->report_index, s->timestamp_ms);
   print_report_fast(&s->report, max_output_channels);
+  LOG_INF("== End Report ==");
 }
 
 

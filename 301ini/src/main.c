@@ -158,6 +158,7 @@ static struct bt_le_cs_create_config_params config_params = {
 };
 
 // 测距参数：interval应该是最核心的一个。假设一个procedure是50ms，那么采样间隔就是间隔N个50ms
+// 功率差：-1 = 0xff, -2 = 0xfe, -3 = 0xfd,-4 = 0xfc,-5 = 0xfb, -6 = 0xfa,-7 = 0xf9,-8 = 0xf8
 static const struct bt_le_cs_set_procedure_parameters_param procedure_params = {
     .config_id = CS_CONFIG_ID,
     .max_procedure_len = 500,
