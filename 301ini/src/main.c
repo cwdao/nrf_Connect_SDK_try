@@ -135,8 +135,8 @@ static const struct bt_le_cs_set_default_settings_param default_settings = {
     .enable_initiator_role = true,
     .enable_reflector_role = false,
     .cs_sync_antenna_selection = BT_LE_CS_ANTENNA_SELECTION_OPT_REPETITIVE,
-    .max_tx_power = BT_HCI_OP_LE_CS_MAX_MAX_TX_POWER,
-    // .max_tx_power = 0,
+    // .max_tx_power = BT_HCI_OP_LE_CS_MAX_MAX_TX_POWER,
+    .max_tx_power = 8,
 };
 
 // 创建CS配置参数，步骤类型，信道选择等等。传给bt_le_cs_create_config
@@ -169,7 +169,7 @@ static const struct bt_le_cs_set_procedure_parameters_param procedure_params = {
     .max_subevent_len = 40000, // 这个就是us
     .tone_antenna_config_selection = BT_LE_CS_TONE_ANTENNA_CONFIGURATION_A1_B1,
     .phy = BT_LE_CS_PROCEDURE_PHY_2M,
-    .tx_power_delta = 0x80, //0x80 means no power difference
+    .tx_power_delta = 0x00, //0x80 means no power difference
     .preferred_peer_antenna = BT_LE_CS_PROCEDURE_PREFERRED_PEER_ANTENNA_1,
     .snr_control_initiator = BT_LE_CS_SNR_CONTROL_NOT_USED,
     .snr_control_reflector = BT_LE_CS_SNR_CONTROL_NOT_USED,

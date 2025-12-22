@@ -156,7 +156,8 @@ int main(void)
 			.enable_initiator_role = false,
 			.enable_reflector_role = true,
 			.cs_sync_antenna_selection = BT_LE_CS_ANTENNA_SELECTION_OPT_REPETITIVE,
-			.max_tx_power = BT_HCI_OP_LE_CS_MAX_MAX_TX_POWER,
+			// .max_tx_power = BT_HCI_OP_LE_CS_MAX_MAX_TX_POWER,
+			.max_tx_power = 8,
 		};
 
 		err = bt_le_cs_set_default_settings(connection, &default_settings);
