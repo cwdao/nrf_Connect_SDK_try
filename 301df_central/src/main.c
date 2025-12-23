@@ -41,6 +41,8 @@
 static struct bt_conn *default_conn;
 static const struct bt_le_conn_param conn_params = BT_LE_CONN_PARAM_INIT(
 	CONN_INT_MIN, CONN_INT_MAX, CONN_LATENCY, CONN_TIMEOUT);
+//cte channel map
+static uint8_t my_channels[] = { 3};
 
 #if defined(CONFIG_BT_DF_CTE_RX_AOA)
 /* Example sequence of antenna switch patterns for antenna matrix designed by
@@ -200,6 +202,7 @@ static void start_scan(void)
 	printk("Scanning successfully started\n");
 }
 
+// 测试函数，待后续删除
 static int set_custom_channel_map(void)
 {
     struct net_buf *buf;
@@ -249,6 +252,67 @@ static int set_custom_channel_map(void)
     return 0;
 }
 
+static bool is_valid_data_channel(uint8_t ch)
+{
+    /* Data channels are 0–36, advertising channels are 37–39 */
+    return (ch <= 36);
+}
+
+int set_custom_channel_map_from_list(const uint8_t *channels,
+                                     size_t channel_cnt)
+{
+    struct net_buf *buf;
+    struct bt_hci_cp_le_set_host_chan_classif *cp;
+    int err;
+    size_t i;
+    uint8_t valid_cnt = 0;
+
+    if (!channels || channel_cnt == 0) {
+        printk("Channel list empty\n");
+        return -EINVAL;
+    }
+
+    buf = bt_hci_cmd_create(BT_HCI_OP_LE_SET_HOST_CHAN_CLASSIF,
+                            sizeof(*cp));
+    if (!buf) {
+        printk("No HCI buffer\n");
+        return -ENOMEM;
+    }
+
+    cp = net_buf_add(buf, sizeof(*cp));
+
+    /* Clear all channels first */
+    memset(cp->ch_map, 0x00, sizeof(cp->ch_map));
+
+    for (i = 0; i < channel_cnt; i++) {
+        uint8_t ch = channels[i];
+
+        /* Skip advertising channels and invalid values */
+        if (!is_valid_data_channel(ch)) {
+            printk("Skip invalid/adv channel %u\n", ch);
+            continue;
+        }
+
+        cp->ch_map[ch / 8] |= BIT(ch % 8);
+        valid_cnt++;
+    }
+
+    // if (valid_cnt < 2) {
+    //     printk("Too few valid data channels (%u)\n", valid_cnt);
+    //     return -EINVAL;
+    // }
+
+    err = bt_hci_cmd_send_sync(BT_HCI_OP_LE_SET_HOST_CHAN_CLASSIF,
+                               buf, NULL);
+    if (err) {
+        printk("Set channel map failed (err %d)\n", err);
+        return err;
+    }
+
+    printk("Custom channel map applied (%u channels)\n", valid_cnt);
+    return 0;
+}
+
 static void connected(struct bt_conn *conn, uint8_t conn_err)
 {
 	char addr[BT_ADDR_LE_STR_LEN];
@@ -268,7 +332,8 @@ static void connected(struct bt_conn *conn, uint8_t conn_err)
 
 	printk("Connected: %s\n", addr);
 	/* Apply custom channel map */
-	set_custom_channel_map();
+	set_custom_channel_map_from_list(my_channels,
+		ARRAY_SIZE(my_channels));
 
   // 检查连接间隔参数
   int err;
