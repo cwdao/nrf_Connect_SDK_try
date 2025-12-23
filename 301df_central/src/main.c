@@ -14,6 +14,11 @@
 #include <zephyr/bluetooth/hci.h>
 #include <zephyr/bluetooth/direction.h>
 #include <zephyr/bluetooth/conn.h>
+// for cte pkt channel map 
+// #include <zephyr/bluetooth/hci.h>
+#include <zephyr/bluetooth/hci_vs.h>
+#include <zephyr/net/buf.h>
+
 
 /* Latency set to zero, to enforce PDU exchange every connection event */
 #define CONN_LATENCY 0U
@@ -195,6 +200,55 @@ static void start_scan(void)
 	printk("Scanning successfully started\n");
 }
 
+static int set_custom_channel_map(void)
+{
+    struct net_buf *buf;
+    struct bt_hci_cp_le_set_host_chan_classif *cp;
+    int err;
+
+    buf = bt_hci_cmd_create(BT_HCI_OP_LE_SET_HOST_CHAN_CLASSIF,
+                            sizeof(*cp));
+    if (!buf) {
+        printk("No HCI buffer\n");
+        return -ENOMEM;
+    }
+
+    cp = net_buf_add(buf, sizeof(*cp));
+
+    /* Clear all channels first */
+    memset(cp->ch_map, 0x00, sizeof(cp->ch_map));
+
+    /*
+     * Enable selected Data Channels
+     * Channel bit layout:
+     *  ch 0–7   -> ch_map[0]
+     *  ch 8–15  -> ch_map[1]
+     *  ch 16–23 -> ch_map[2]
+     *  ch 24–31 -> ch_map[3]
+     *  ch 32–36 -> ch_map[4]
+     */
+
+    /* Example: enable 5 channels */
+    cp->ch_map[0] |= BIT(3);          /* ch 3  */
+    cp->ch_map[0] |= BIT(7);          /* ch 7  */
+
+    cp->ch_map[1] |= BIT(15 - 8);     /* ch 15 */
+
+    cp->ch_map[2] |= BIT(17 - 16);    /* ch 17 */
+
+    cp->ch_map[3] |= BIT(24 - 24);    /* ch 24 */
+
+    err = bt_hci_cmd_send_sync(BT_HCI_OP_LE_SET_HOST_CHAN_CLASSIF,
+                               buf, NULL);
+    if (err) {
+        printk("Set channel map failed (err %d)\n", err);
+        return err;
+    }
+
+    printk("Custom channel map applied\n");
+    return 0;
+}
+
 static void connected(struct bt_conn *conn, uint8_t conn_err)
 {
 	char addr[BT_ADDR_LE_STR_LEN];
@@ -213,6 +267,8 @@ static void connected(struct bt_conn *conn, uint8_t conn_err)
 	}
 
 	printk("Connected: %s\n", addr);
+	/* Apply custom channel map */
+	set_custom_channel_map();
 
   // 检查连接间隔参数
   int err;
