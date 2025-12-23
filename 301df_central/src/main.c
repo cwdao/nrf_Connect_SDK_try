@@ -214,10 +214,16 @@ static void connected(struct bt_conn *conn, uint8_t conn_err)
 
 	printk("Connected: %s\n", addr);
 
-	struct bt_conn_info info;
-	bt_conn_get_info(conn, &info);
+  // 检查连接间隔参数
+  int err;
+  struct bt_conn_info info = {0};
+  err = bt_conn_get_info(conn, &info);
+  if (err) {
+    printk("Failed to get connection info %d", err);
+    return;
+  }
 
-	printk("Interval = %.2f ms\n", info.le.interval * 1.25);
+  printk("Conn. interval is %u units", info.le.interval);
 
 	if (conn == default_conn) {
 		enable_cte_reqest();
