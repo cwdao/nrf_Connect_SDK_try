@@ -18,3 +18,7 @@
 			<&gpio0 7 0>;
 		};
 };
+
+&uart0 {
+	current-speed = <230400>;
+};
