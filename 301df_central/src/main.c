@@ -255,11 +255,21 @@ static void cte_recv_cb(struct bt_conn *conn, struct bt_df_conn_iq_samples_repor
 	bt_addr_le_to_str(bt_conn_get_dst(conn), addr, sizeof(addr));
 
 	if (report->err == BT_DF_IQ_REPORT_ERR_SUCCESS) {
-		printk("CTE[%s]: samples count %d, cte type %s, slot durations: %u [us], "
-		       "packet status %s, RSSI %i\n",
-		       addr, report->sample_count, cte_type2str(report->cte_type),
-		       report->slot_durations, packet_status2str(report->packet_status),
-		       report->rssi);
+		// printk("CTE[%s]: samples count %d, cte type %s, slot durations: %u [us], "
+		//        "packet status %s, RSSI %i\n",
+		//        addr, report->sample_count, cte_type2str(report->cte_type),
+		//        report->slot_durations, packet_status2str(report->packet_status),
+		//        report->rssi);
+		printk("CTE[%s]: ch %u, evt %u, samples %u, cte %s, slot %u [us], "
+			"status %s, RSSI %d.%d dBm\n",
+			addr,
+			report->chan_idx,                /* Data Channel index */
+			report->conn_evt_counter,        /* Connection event counter */
+			report->sample_count,
+			cte_type2str(report->cte_type),
+			report->slot_durations,
+			packet_status2str(report->packet_status),
+			report->rssi / 10);
 	} else {
 		printk("CTE[%s]: request failed, err %u\n", addr, report->err);
 	}
