@@ -18,7 +18,7 @@
 // for cte pkt channel map
 // #include <zephyr/bluetooth/hci.h>
 #include <zephyr/bluetooth/hci_vs.h>
-#include <zephyr/net/buf.h>
+#include <zephyr/net_buf.h>
 
 /* Latency set to zero, to enforce PDU exchange every connection event */
 #define CONN_LATENCY 0U
@@ -34,8 +34,8 @@
 
 #define DF_FEAT_ENABLED BIT64(BT_LE_FEAT_BIT_CONN_CTE_RESP)
 
-#define CONN_INT_MIN 0x08 /* 16*1.25=20ms */
-#define CONN_INT_MAX 0x08 /* 16*1.25=20ms */
+#define CONN_INT_MIN 0x14 /* 16*1.25=20ms */
+#define CONN_INT_MAX 0x14 /* 16*1.25=20ms */
 
 static struct bt_conn *default_conn;
 static const struct bt_le_conn_param conn_params = BT_LE_CONN_PARAM_INIT(
@@ -286,7 +286,7 @@ static void connected(struct bt_conn *conn, uint8_t conn_err) {
     return;
   }
 
-  printk("Conn. interval is %u units", info.le.interval);
+  printk("Conn. interval is %u us", info.le.interval);
 
   if (conn == default_conn) {
     enable_cte_reqest();
@@ -328,7 +328,7 @@ static void cte_recv_cb(struct bt_conn *conn,
     // printk("ch %u, evt %u, smp %u, slt %u [us]\n", report->chan_idx,
     //        report->conn_evt_counter, report->sample_count,
     //        report->slot_durations);
-    printk("Ch %u, evt %u\n", report->chan_idx, report->conn_evt_counter);
+    // printk("Ch %u, evt %u\n", report->chan_idx, report->conn_evt_counter);
   } else {
     printk("CTE[%s]: request failed, err %u\n", addr, report->err);
   }
@@ -336,9 +336,9 @@ static void cte_recv_cb(struct bt_conn *conn,
 
 static void le_param_updated_cb(struct bt_conn *conn, uint16_t interval,
                                 uint16_t latency, uint16_t timeout) {
-  printk("LE param updated: interval %u (%.2f ms) latency %u timeout %u (%.0f "
+  printk("LE param updated: interval %u (ms) latency %u timeout %u ("
          "ms)\n",
-         interval, interval * 1.25, latency, timeout, timeout * 10.0);
+         interval, latency, timeout);
 }
 
 BT_CONN_CB_DEFINE(conn_callbacks) = {
