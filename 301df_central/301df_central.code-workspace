@@ -7,6 +7,21 @@
 	"settings": {
 		"clangd.arguments": [
 			"--compile-commands-dir=${workspaceFolder}/build_5340/${workspaceFolderBasename}/"
-		  ]
+		],
+		"nrf-connect.debugging.bindings": {
+			"${workspaceFolder}/build_5340/301df_central": "Launch 301df_central"
+		}
+	},
+	"launch": {
+		"version": "0.2.0",
+		"configurations": [
+			{
+				"type": "nrf-connect",
+				"request": "launch",
+				"name": "Launch 301df_central",
+				"config": "${workspaceFolder}/build_5340/301df_central",
+				"runToEntryPoint": "main"
+			}
+		]
 	}
 }

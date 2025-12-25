@@ -30,12 +30,12 @@
 // #define CTE_REQ_INTERVAL (CONN_LATENCY + 10U)
 #define CTE_REQ_INTERVAL 1U
 /* Length of CTE in unit of 8 us */
-#define CTE_LEN (0x14U)
+#define CTE_LEN (0x02U)
 
 #define DF_FEAT_ENABLED BIT64(BT_LE_FEAT_BIT_CONN_CTE_RESP)
 
-#define CONN_INT_MIN 0x14 /* 16*1.25=20ms */
-#define CONN_INT_MAX 0x14 /* 16*1.25=20ms */
+#define CONN_INT_MIN 0x14 /* 20*1.25=25ms */
+#define CONN_INT_MAX 0x14 /* 20*1.25=25ms */
 
 static struct bt_conn *default_conn;
 static const struct bt_le_conn_param conn_params = BT_LE_CONN_PARAM_INIT(
@@ -141,7 +141,7 @@ static void enable_cte_reqest(void) {
   const struct bt_df_conn_cte_rx_param cte_rx_params = {
 #if defined(CONFIG_BT_DF_CTE_RX_AOA)
       .cte_types = BT_DF_CTE_TYPE_ALL,
-      .slot_durations = 0x2,
+      .slot_durations = BT_DF_ANTENNA_SWITCHING_SLOT_1US,
       .num_ant_ids = ARRAY_SIZE(ant_patterns),
       .ant_ids = ant_patterns,
 #else
@@ -218,7 +218,7 @@ int set_custom_channel_map_from_list(const uint8_t *channels,
     return -EINVAL;
   }
 
-  buf = bt_hci_cmd_create(BT_HCI_OP_LE_SET_HOST_CHAN_CLASSIF, sizeof(*cp));
+  buf = bt_hci_cmd_alloc(K_FOREVER);
   if (!buf) {
     printk("No HCI buffer\n");
     return -ENOMEM;
@@ -275,7 +275,7 @@ static void connected(struct bt_conn *conn, uint8_t conn_err) {
 
   printk("Connected: %s\n", addr);
   /* Apply custom channel map */
-  //   set_custom_channel_map_from_list(my_channels, ARRAY_SIZE(my_channels));
+    set_custom_channel_map_from_list(my_channels, ARRAY_SIZE(my_channels));
 
   // 检查连接间隔参数
   int err;
@@ -286,7 +286,7 @@ static void connected(struct bt_conn *conn, uint8_t conn_err) {
     return;
   }
 
-  printk("Conn. interval is %u us", info.le.interval);
+  printk("Conn. interval is %u us", info.le.interval_us);
 
   if (conn == default_conn) {
     enable_cte_reqest();
@@ -325,9 +325,9 @@ static void cte_recv_cb(struct bt_conn *conn,
     //        report->sample_count, cte_type2str(report->cte_type),
     //        report->slot_durations, packet_status2str(report->packet_status),
     //        report->rssi / 10);
-    // printk("ch %u, evt %u, smp %u, slt %u [us]\n", report->chan_idx,
-    //        report->conn_evt_counter, report->sample_count,
-    //        report->slot_durations);
+    printk("ch %u, evt %u, smp %u, slt %u [us]\n", report->chan_idx,
+           report->conn_evt_counter, report->sample_count,
+           report->slot_durations);
     // printk("Ch %u, evt %u\n", report->chan_idx, report->conn_evt_counter);
   } else {
     printk("CTE[%s]: request failed, err %u\n", addr, report->err);
@@ -336,7 +336,7 @@ static void cte_recv_cb(struct bt_conn *conn,
 
 static void le_param_updated_cb(struct bt_conn *conn, uint16_t interval,
                                 uint16_t latency, uint16_t timeout) {
-  printk("LE param updated: interval %u (ms) latency %u timeout %u ("
+  printk("LE param updated: interval %u *1.25(ms) latency %u timeout %u ("
          "ms)\n",
          interval, latency, timeout);
 }
