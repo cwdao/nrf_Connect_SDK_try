@@ -34,8 +34,8 @@
 
 #define DF_FEAT_ENABLED BIT64(BT_LE_FEAT_BIT_CONN_CTE_RESP)
 
-#define CONN_INT_MIN 0x14 /* 20*1.25=25ms */
-#define CONN_INT_MAX 0x14 /* 20*1.25=25ms */
+#define CONN_INT_MIN 0x08 /* 20*1.25=25ms */
+#define CONN_INT_MAX 0x08 /* 20*1.25=25ms */
 
 static struct bt_conn *default_conn;
 static const struct bt_le_conn_param conn_params = BT_LE_CONN_PARAM_INIT(

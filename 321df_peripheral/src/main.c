@@ -87,9 +87,18 @@ static void disconnected(struct bt_conn *conn, uint8_t reason)
 	printk("Disconnected, reason 0x%02x %s\n", reason, bt_hci_err_to_str(reason));
 }
 
+static void le_param_updated_cb(struct bt_conn *conn, uint16_t interval,
+	uint16_t latency, uint16_t timeout) {
+printk("LE param updated: interval %u *1.25(ms) latency %u timeout %u ("
+"ms)\n",
+interval, latency, timeout);
+}
+
+
 BT_CONN_CB_DEFINE(conn_callbacks) = {
 	.connected = connected,
 	.disconnected = disconnected,
+	.le_param_updated = le_param_updated_cb,
 };
 
 static void bt_ready(void)
