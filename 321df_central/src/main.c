@@ -312,7 +312,7 @@ static void disconnected(struct bt_conn *conn, uint8_t reason) {
   start_scan();
 }
 
-static void cte_recv_cb(struct bt_conn *conn,
+static void cte_recv_cb_original(struct bt_conn *conn,
                         struct bt_df_conn_iq_samples_report const *report) {
   char addr[BT_ADDR_LE_STR_LEN];
 
@@ -352,6 +352,57 @@ static void cte_recv_cb(struct bt_conn *conn,
   } else {
     printk("CTE[%s]: request failed, err %u\n", addr, report->err);
   }
+}
+// 协议帧的版本，这一版只有信道、帧序号、平均功率、时间戳
+#define DF_VER 1
+static uint32_t df_seq_num = 0;
+static void cte_recv_cb(struct bt_conn *conn,
+                        struct bt_df_conn_iq_samples_report const *report)
+{
+  ARG_UNUSED(conn);
+
+  /* 1) 只处理成功的 IQ report */
+  if (!report || report->err != BT_DF_IQ_REPORT_ERR_SUCCESS) {
+      return;
+  }
+
+  /* 2) 你当前只能使用 8-bit IQ */
+  if (report->sample_type != BT_DF_IQ_SAMPLE_8_BITS_INT ||
+      report->sample == NULL ||
+      report->sample_count == 0) {
+      return;
+  }
+
+  /* 3) 计算平均功率 p_avg = mean(I^2 + Q^2)，不做开方（上位机再 sqrt）
+   *     使用整数运算避免浮点计算，提升性能
+   */
+  uint32_t sum_p = 0;
+  int refrence_sample_count = 8;  // 参考周期采样点数
+  for (uint8_t n = 0; n < refrence_sample_count; n++) {
+      int32_t i = report->sample[n].i;  /* int8 扩展到 int32 */
+      int32_t q = report->sample[n].q;
+      sum_p += (uint32_t)(i * i + q * q);  /* 只计算功率，不开方 */
+  } 
+  uint32_t p_avg = sum_p / refrence_sample_count;  /* 平均功率值（整数） */
+
+  /* 4) ms 时间戳：uint32，大约 49.7 天会回绕一次 */
+  uint32_t ts_ms = k_uptime_get_32();
+
+  /* 6) 文本协议设计（固定头尾）：
+    *
+    * 一行格式：
+    *   $DF,<ver>,<ch>,<seq>,<ts_ms>,<p_avg>\r\n
+    *
+    * - "$DF,1,"：固定帧头 + 版本号
+    * - ch：信道（0..36）
+    * - ts_ms：设备启动以来毫秒
+    * - p_avg：平均功率值（I^2 + Q^2 的整数平均值，上位机需要 sqrt(p_avg) 得到幅值）
+    * - "\r\n"：固定帧尾（行结束）
+    *
+    */
+
+    /* 直接打印功率值（整数），上位机需要 sqrt(p_avg) 得到幅值 */
+    printk("$DF,%u,%u,%u,%u,%u\r\n", DF_VER, report->chan_idx, df_seq_num++, ts_ms, p_avg);
 }
 
 static void le_param_updated_cb(struct bt_conn *conn, uint16_t interval,
