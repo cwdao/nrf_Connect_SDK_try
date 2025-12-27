@@ -125,7 +125,8 @@ static void device_found(const bt_addr_le_t *addr, int8_t rssi, uint8_t type,
   char dev[BT_ADDR_LE_STR_LEN];
 
   bt_addr_le_to_str(addr, dev, sizeof(dev));
-  // printk("[DEVICE]: %s, AD evt type %u, AD data len %u, RSSI %i\n", dev, type,
+  // printk("[DEVICE]: %s, AD evt type %u, AD data len %u, RSSI %i\n", dev,
+  // type,
   //        ad->len, rssi);
 
   /* We're only interested in connectable events */
@@ -275,7 +276,7 @@ static void connected(struct bt_conn *conn, uint8_t conn_err) {
 
   printk("Connected: %s\n", addr);
   /* Apply custom channel map */
-    set_custom_channel_map_from_list(my_channels, ARRAY_SIZE(my_channels));
+  set_custom_channel_map_from_list(my_channels, ARRAY_SIZE(my_channels));
 
   // 检查连接间隔参数
   int err;
@@ -325,10 +326,29 @@ static void cte_recv_cb(struct bt_conn *conn,
     //        report->sample_count, cte_type2str(report->cte_type),
     //        report->slot_durations, packet_status2str(report->packet_status),
     //        report->rssi / 10);
-    printk("ch %u, evt %u, smp %u, slt %u [us]\n", report->chan_idx,
-           report->conn_evt_counter, report->sample_count,
-           report->slot_durations);
+
+    // printk("ch %u, evt %u, smp %u, slt %u [us]\n", report->chan_idx,
+    //        report->conn_evt_counter, report->sample_count,
+    //        report->slot_durations);
+
     // printk("Ch %u, evt %u\n", report->chan_idx, report->conn_evt_counter);
+
+    printk("ch=%u,evt=%u,phy=%u,cte=%u,slot=%u,status=%u,rssi=%d.%d,smp_type=%"
+           "u,smp_cnt=%u\n",
+           // addr,
+           report->chan_idx, report->conn_evt_counter, report->rx_phy,
+           report->cte_type, report->slot_durations, report->packet_status,
+           report->rssi / 10,
+           (report->rssi < 0 ? -report->rssi : report->rssi) % 10,
+           report->sample_type, report->sample_count);
+
+    /* 默认按 int8_t 版本处理（包含 BT_DF_IQ_SAMPLE_8_BITS） */
+    for (uint8_t n = 0; n < report->sample_count; n++) {
+      int8_t i = report->sample[n].i;
+      int8_t q = report->sample[n].q;
+      printk("%d,%d;", i, q);
+    }
+    printk("\n");
   } else {
     printk("CTE[%s]: request failed, err %u\n", addr, report->err);
   }
