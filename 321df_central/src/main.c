@@ -86,7 +86,7 @@ static bool eir_found(struct bt_data *data, void *user_data) {
   uint64_t u64 = 0U;
   int err;
 
-  printk("[AD]: %u data_len %u\n", data->type, data->data_len);
+  // printk("[AD]: %u data_len %u\n", data->type, data->data_len);
 
   switch (data->type) {
   case BT_DATA_LE_SUPPORTED_FEATURES:
@@ -125,8 +125,8 @@ static void device_found(const bt_addr_le_t *addr, int8_t rssi, uint8_t type,
   char dev[BT_ADDR_LE_STR_LEN];
 
   bt_addr_le_to_str(addr, dev, sizeof(dev));
-  printk("[DEVICE]: %s, AD evt type %u, AD data len %u, RSSI %i\n", dev, type,
-         ad->len, rssi);
+  // printk("[DEVICE]: %s, AD evt type %u, AD data len %u, RSSI %i\n", dev, type,
+  //        ad->len, rssi);
 
   /* We're only interested in connectable events */
   if (type == BT_GAP_ADV_TYPE_ADV_IND ||
