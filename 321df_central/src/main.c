@@ -312,50 +312,65 @@ static void disconnected(struct bt_conn *conn, uint8_t reason) {
   start_scan();
 }
 
-static void cte_recv_cb_original(struct bt_conn *conn,
-                        struct bt_df_conn_iq_samples_report const *report) {
-  char addr[BT_ADDR_LE_STR_LEN];
+// static void cte_recv_cb_original(struct bt_conn *conn,
+//                         struct bt_df_conn_iq_samples_report const *report) {
+//   char addr[BT_ADDR_LE_STR_LEN];
 
-  bt_addr_le_to_str(bt_conn_get_dst(conn), addr, sizeof(addr));
+//   bt_addr_le_to_str(bt_conn_get_dst(conn), addr, sizeof(addr));
 
-  if (report->err == BT_DF_IQ_REPORT_ERR_SUCCESS) {
-    // printk("CTE[%s]: ch %u, evt %u, samples %u, cte %s, slot %u [us], "
-    //        "status %s, RSSI %d.%d dBm\n",
-    //        addr, report->chan_idx,   /* Data Channel index */
-    //        report->conn_evt_counter, /* Connection event counter */
-    //        report->sample_count, cte_type2str(report->cte_type),
-    //        report->slot_durations, packet_status2str(report->packet_status),
-    //        report->rssi / 10);
+//   if (report->err == BT_DF_IQ_REPORT_ERR_SUCCESS) {
+//     // printk("CTE[%s]: ch %u, evt %u, samples %u, cte %s, slot %u [us], "
+//     //        "status %s, RSSI %d.%d dBm\n",
+//     //        addr, report->chan_idx,   /* Data Channel index */
+//     //        report->conn_evt_counter, /* Connection event counter */
+//     //        report->sample_count, cte_type2str(report->cte_type),
+//     //        report->slot_durations, packet_status2str(report->packet_status),
+//     //        report->rssi / 10);
 
-    // printk("ch %u, evt %u, smp %u, slt %u [us]\n", report->chan_idx,
-    //        report->conn_evt_counter, report->sample_count,
-    //        report->slot_durations);
+//     // printk("ch %u, evt %u, smp %u, slt %u [us]\n", report->chan_idx,
+//     //        report->conn_evt_counter, report->sample_count,
+//     //        report->slot_durations);
 
-    // printk("Ch %u, evt %u\n", report->chan_idx, report->conn_evt_counter);
+//     // printk("Ch %u, evt %u\n", report->chan_idx, report->conn_evt_counter);
 
-    printk("ch=%u,evt=%u,phy=%u,cte=%u,slot=%u,status=%u,rssi=%d.%d,smp_type=%"
-           "u,smp_cnt=%u\n",
-           // addr,
-           report->chan_idx, report->conn_evt_counter, report->rx_phy,
-           report->cte_type, report->slot_durations, report->packet_status,
-           report->rssi / 10,
-           (report->rssi < 0 ? -report->rssi : report->rssi) % 10,
-           report->sample_type, report->sample_count);
+//     printk("ch=%u,evt=%u,phy=%u,cte=%u,slot=%u,status=%u,rssi=%d.%d,smp_type=%"
+//            "u,smp_cnt=%u\n",
+//            // addr,
+//            report->chan_idx, report->conn_evt_counter, report->rx_phy,
+//            report->cte_type, report->slot_durations, report->packet_status,
+//            report->rssi / 10,
+//            (report->rssi < 0 ? -report->rssi : report->rssi) % 10,
+//            report->sample_type, report->sample_count);
 
-    /* 默认按 int8_t 版本处理（包含 BT_DF_IQ_SAMPLE_8_BITS） */
-    for (uint8_t n = 0; n < report->sample_count; n++) {
-      int8_t i = report->sample[n].i;
-      int8_t q = report->sample[n].q;
-      printk("%d,%d;", i, q);
-    }
-    printk("\n");
-  } else {
-    printk("CTE[%s]: request failed, err %u\n", addr, report->err);
-  }
-}
+//     /* 默认按 int8_t 版本处理（包含 BT_DF_IQ_SAMPLE_8_BITS） */
+//     for (uint8_t n = 0; n < report->sample_count; n++) {
+//       int8_t i = report->sample[n].i;
+//       int8_t q = report->sample[n].q;
+//       printk("%d,%d;", i, q);
+//     }
+//     printk("\n");
+//   } else {
+//     printk("CTE[%s]: request failed, err %u\n", addr, report->err);
+//   }
+// }
 // 协议帧的版本，这一版只有信道、帧序号、平均功率、时间戳
 #define DF_VER 1
 static uint32_t df_seq_num = 0;
+
+/* 对很小数组做简单排序：插入排序即可（8个元素开销很小） */
+static void sort_u16(uint16_t *a, size_t n)
+{
+    for (size_t i = 1; i < n; i++) {
+        uint16_t key = a[i];
+        size_t j = i;
+        while (j > 0 && a[j - 1] > key) {
+            a[j] = a[j - 1];
+            j--;
+        }
+        a[j] = key;
+    }
+}
+
 static void cte_recv_cb(struct bt_conn *conn,
                         struct bt_df_conn_iq_samples_report const *report)
 {
@@ -377,13 +392,23 @@ static void cte_recv_cb(struct bt_conn *conn,
    *     使用整数运算避免浮点计算，提升性能
    */
   uint32_t sum_p = 0;
+  uint16_t p_array[8];
   int refrence_sample_count = 8;  // 参考周期采样点数
   for (uint8_t n = 0; n < refrence_sample_count; n++) {
       int32_t i = report->sample[n].i;  /* int8 扩展到 int32 */
       int32_t q = report->sample[n].q;
-      sum_p += (uint32_t)(i * i + q * q);  /* 只计算功率，不开方 */
+      p_array[n] = (uint16_t)(i * i + q * q);
+      // sum_p += (uint32_t)(i * i + q * q);  /* 只计算功率，不开方 */
   } 
-  uint32_t p_avg = sum_p / refrence_sample_count;  /* 平均功率值（整数） */
+  /* 2) 排序后做截尾均值：丢掉最小和最大各1个，平均剩余6个 */
+  sort_u16(p_array, refrence_sample_count);
+  uint32_t sum_mid = 0;
+  for (uint8_t k = 1; k <= 6; k++) {   /* p[1]..p[6] 共6个 */
+      sum_mid += p_array[k];
+  }
+  uint32_t p_avg = sum_mid / 6;
+
+  // uint32_t p_avg = sum_p / refrence_sample_count;  /* 平均功率值（整数） */
 
   /* 4) ms 时间戳：uint32，大约 49.7 天会回绕一次 */
   uint32_t ts_ms = k_uptime_get_32();
