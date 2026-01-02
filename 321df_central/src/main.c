@@ -29,7 +29,7 @@
 #define CONN_TIMEOUT 400U
 
 /* Default Inteval: 25ms => 20 * 1.25ms */
-#define CONN_INT_DEFAULT_UNITS 0x14 /* 20 */
+#define CONN_INT_DEFAULT_UNITS 0x08 /* 20 */
 
 #define DF_FEAT_ENABLED BIT64(BT_LE_FEAT_BIT_CONN_CTE_RESP)
 
