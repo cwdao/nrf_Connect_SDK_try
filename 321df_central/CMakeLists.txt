@@ -12,5 +12,6 @@ project(321df_central)
 # NORDIC SDK APP START
 target_sources(app PRIVATE
   src/main.c
+  src/uart_cmd.c
 )
 # NORDIC SDK APP END
