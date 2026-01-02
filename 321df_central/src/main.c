@@ -49,7 +49,7 @@ static struct bt_le_conn_param g_conn_params =
 /* ---------- CTE 参数：由命令设置---------- */
 static uint8_t g_cte_len = 0x02; /* unit 8us */
 static uint8_t g_cte_req_interval = 1U; /* connection events */
-static uint8_t g_cte_type = BT_DF_CTE_TYPE_AOD_2US;
+static uint8_t g_cte_type = BT_DF_CTE_TYPE_AOA;
 
 /* 自定义信道列表（由命令设置） */
 static uint8_t g_channels[10] = {3};
