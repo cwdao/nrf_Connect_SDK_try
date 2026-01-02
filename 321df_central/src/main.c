@@ -81,6 +81,24 @@ static const char *packet_status2str(uint8_t status) {
   }
 }
 
+static void print_conn_tx_power(struct bt_conn *conn)
+{
+    int err;
+    struct bt_conn_le_tx_power p = {0};
+
+    /* phy=0 => 走 BT_HCI_OP_READ_TX_POWER_LEVEL，返回 current/max */
+    p.phy = 0;
+
+    err = bt_conn_le_get_tx_power_level(conn, &p);
+    if (err) {
+        printk("Read TX power failed (err %d)\n", err);
+        return;
+    }
+
+    printk("TX power (conn): current=%d dBm, max=%d dBm\n",
+           p.current_level, p.max_level);
+}
+
 static bool eir_found(struct bt_data *data, void *user_data) {
   bt_addr_le_t *addr = user_data;
   uint64_t u64 = 0U;
@@ -287,7 +305,8 @@ static void connected(struct bt_conn *conn, uint8_t conn_err) {
     return;
   }
 
-  printk("Conn. interval is %u us", info.le.interval_us);
+  printk("Conn. interval is %u us\n", info.le.interval_us);
+  print_conn_tx_power(conn);
 
   if (conn == default_conn) {
     enable_cte_reqest();
