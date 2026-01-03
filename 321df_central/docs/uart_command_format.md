@@ -406,33 +406,3 @@ $OK,DF_CONFIG,channels_cnt=1,interval_units=20,cte_len=20,cte_type=2
 $DF,1,7,<seq>,<ts_ms>,<p_avg>  (信道已切换到7，CTE数据继续接收)
 ...
 ```
-
----
-
-# Git Commit（英文标题 + 中文详细内容）
-
-**Commit title (English)**
-
-```text
-uart: add $CMD control protocol and fix command parsing reliability
-```
-
-**Commit body (Chinese)**
-
-```text
-新增：UART 命令控制协议（$CMD）与统一应答帧
-- 新增 uart_cmd 模块：在串口上解析 "$CMD,<cmd>,k=v,k=v..." 命令行
-- 提供统一输出封装：$OK / $ERR / $EVT，便于上位机做状态机解析
-- 在 main 中注册命令处理器，支持：
-  - PING：连通性测试
-  - BLE_SCAN：start/stop 扫描控制
-  - BLE_CONN：disconnect 断开连接
-  - DF_START：配置信道列表/连接间隔/CTE 参数并启动 DF 流程
-  - DF_STOP：停止 DF（禁用 CTE request/rx）
-- 增加参数解析辅助：k=v 查找、u32 解析、channels 列表解析、interval_ms->1.25ms units 换算与范围检查
-
-修复：串口命令不能稳定识别/出现拼接错乱的问题
-- 将原先基于 uart_poll_in 的低频轮询接收改为 IRQ + ring buffer 的接收路径
-- 修复在日志输出较多或上位机连续发送时因 RX FIFO 溢出导致的丢字节，从而出现 "PI$CMD"/"PING$CMD" 等命令拼接问题
-- 增加 Kconfig 依赖：启用 CONFIG_UART_INTERRUPT_DRIVEN 以确保中断接收生效
-- 可选调试：打印每次解析到的完整命令行，便于现场定位串口输入问题
