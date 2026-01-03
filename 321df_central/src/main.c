@@ -471,6 +471,7 @@ static int interval_ms_to_units(uint32_t interval_ms, uint16_t *units)
  * - BLE_SCAN: 控制BLE扫描（start/stop）
  * - BLE_CONN: 控制BLE连接（disconnect）
  * - DF_START: 启动Direction Finding功能
+ * - DF_CONFIG: 在DF运行时动态修改参数（不重新enable CTE REQ）
  * - DF_STOP: 停止Direction Finding功能
  * 
  * @param cmd 命令名称
@@ -622,6 +623,129 @@ static void on_cmd(const char *cmd, int argc, const char *argv[])
         
         /* 重新启用CTE（使用新的参数） */
         enable_cte_request();
+        return;
+    }
+
+    /**
+     * @brief DF_CONFIG命令：在DF运行时动态修改参数（不重新enable CTE REQ）
+     * 
+     * 此命令用于在Direction Finding功能运行时动态修改配置参数，而不会中断CTE数据接收。
+     * 与DF_START不同，DF_CONFIG不会重新enable CTE REQ，因此不会造成CTE接收的短暂中断。
+     * 
+     * 参数（均为可选）：
+     *   - channels: 信道列表，格式"3|10|25"（管道符分隔）
+     *     * 立即生效：直接更新信道映射，无需重新enable CTE REQ
+     *   - interval_ms: 连接间隔（毫秒，必须是1.25ms的整数倍）
+     *     * 下次连接生效：更新连接参数值，需要重新连接才能生效
+     *   - cte_len: CTE长度（8us单位），范围0-255
+     *     * 需要DF_START生效：只更新参数值，需要DF_START才能生效
+     *   - cte_type: CTE类型（"aod1"/"aod2"/"aoa"）
+     *     * 需要DF_START生效：只更新参数值，需要DF_START才能生效
+     * 
+     * 前置条件：
+     *   - 必须已建立BLE连接（default_conn != NULL）
+     *   - CTE必须已启用（g_cte_enabled == true）
+     *   - 如果CTE未启用，请先使用DF_START命令
+     * 
+     * 使用场景：
+     *   - 在DF运行时动态切换信道，不中断CTE数据接收
+     *   - 更新参数值，等待下次使用DF_START时生效
+     * 
+     * @param cmd 命令名称（"DF_CONFIG"）
+     * @param argc 参数个数
+     * @param argv 参数数组
+     */
+    if (!strcmp(cmd, "DF_CONFIG")) {
+        /* 检查是否已连接 */
+        if (!default_conn) {
+            uart_cmd_send_err("DF_CONFIG", 1, "NOT_CONNECTED");
+            return;
+        }
+
+        /* 检查CTE是否已启用 */
+        if (!g_cte_enabled) {
+            uart_cmd_send_err("DF_CONFIG", 2, "CTE_NOT_ENABLED,use_DF_START_first");
+            return;
+        }
+
+        /* channels - 可以直接更新，立即生效 */
+        const char *chs = uart_cmd_kv_find(argc, argv, "channels");
+        if (chs) {
+            size_t cnt = 0;
+            uint8_t tmp[ARRAY_SIZE(g_channels)];
+            int err = parse_channels(chs, tmp, ARRAY_SIZE(tmp), &cnt);
+            if (err) {
+                uart_cmd_send_err("DF_CONFIG", 3, "INVALID_PARAM:channels");
+                return;
+            }
+            memcpy(g_channels, tmp, cnt);
+            g_channel_cnt = cnt;
+        }
+
+        /* interval_ms - 更新连接参数值（需要下次连接时生效） */
+        const char *ims = uart_cmd_kv_find(argc, argv, "interval_ms");
+        if (ims) {
+            uint32_t interval_ms = 0;
+            uint16_t units = 0;
+            if (uart_cmd_parse_u32(ims, &interval_ms) ||
+                interval_ms_to_units(interval_ms, &units)) {
+                uart_cmd_send_err("DF_CONFIG", 4, "INVALID_PARAM:interval_ms");
+                return;
+            }
+            g_conn_params.interval_min = units;
+            g_conn_params.interval_max = units;
+            printk("Note: interval_ms change will take effect on next connection\n");
+        }
+
+        /* cte_len (8us units) - 只更新参数值，需要DF_START才能生效 */
+        const char *cl = uart_cmd_kv_find(argc, argv, "cte_len");
+        if (cl) {
+            uint8_t v = 0;
+            if (uart_cmd_parse_u8(cl, &v)) {
+                uart_cmd_send_err("DF_CONFIG", 5, "INVALID_PARAM:cte_len");
+                return;
+            }
+            g_cte_len = v;
+        }
+
+        /* cte_type: aod1/aod2/aoa (若编译支持 AOA RX) - 只更新参数值，需要DF_START才能生效 */
+        const char *ct = uart_cmd_kv_find(argc, argv, "cte_type");
+        if (ct) {
+            if (!strcmp(ct, "aod1")) g_cte_type = BT_DF_CTE_TYPE_AOD_1US;
+            else if (!strcmp(ct, "aod2")) g_cte_type = BT_DF_CTE_TYPE_AOD_2US;
+#if defined(CONFIG_BT_DF_CTE_RX_AOA)
+            else if (!strcmp(ct, "aoa")) g_cte_type = BT_DF_CTE_TYPE_AOA;
+#endif
+            else {
+                uart_cmd_send_err("DF_CONFIG", 6, "INVALID_PARAM:cte_type");
+                return;
+            }
+        }
+
+        /* 如果更新了信道映射，立即应用新的信道映射（不需要重新enable CTE REQ） */
+        if (chs) {
+            int err = set_custom_channel_map_from_list(g_channels, g_channel_cnt);
+            if (err) {
+                uart_cmd_send_err("DF_CONFIG", 7, "channel_map_update_failed,err=%d", err);
+                return;
+            }
+        }
+
+        /* 注意：
+         * - channels: 已立即应用，无需重新enable CTE REQ
+         * - interval_ms: 需要下次连接时生效
+         * - cte_len/cte_type: 需要DF_START才能生效（会重新enable CTE REQ）
+         */
+        if (cl || ct) {
+            printk("Note: cte_len/cte_type changes require DF_START to take effect\n");
+        }
+
+        uart_cmd_send_ok("DF_CONFIG",
+                         "channels_cnt=%u,interval_units=%u,cte_len=%u,cte_type=%u",
+                         (unsigned)g_channel_cnt,
+                         (unsigned)g_conn_params.interval_min,
+                         (unsigned)g_cte_len,
+                         (unsigned)g_cte_type);
         return;
     }
 

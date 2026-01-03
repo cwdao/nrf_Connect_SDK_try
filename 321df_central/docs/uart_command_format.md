@@ -232,7 +232,115 @@ $ERR,DF_START,2,INVALID_PARAM:interval_ms
 
 ---
 
-### 5) `DF_STOP`
+### 5) `DF_CONFIG`
+
+- **用途**：在DF运行时动态修改参数（不重新enable CTE REQ，不中断CTE接收）
+- **前置条件**
+  - 必须已建立BLE连接
+  - CTE必须已启用（需先使用`DF_START`）
+- **参数（全可选）**
+  - `channels=<list>`：自定义数据信道列表，`|` 分隔；每个信道 `0..36`
+    - **立即生效**：直接更新信道映射，无需重新enable CTE REQ
+    - 例：`channels=7` 或 `channels=3|10|25`
+  - `interval_ms=<n>`：连接间隔（毫秒），必须可换算成 1.25ms units 且满足范围
+    - **下次连接生效**：更新连接参数值，需要重新连接才能生效
+    - 例：`interval_ms=25`
+  - `cte_len=<n>`：CTE 长度（单位 8us），`0..255`
+    - **需要DF_START生效**：只更新参数值，需要`DF_START`才能生效
+    - 例：`cte_len=4`
+  - `cte_type=aod1|aod2|aoa`
+    - **需要DF_START生效**：只更新参数值，需要`DF_START`才能生效
+    - `aoa` 仅在编译启用 `CONFIG_BT_DF_CTE_RX_AOA` 时可用
+
+- **成功回复**（回显当前配置）：
+
+```text
+$OK,DF_CONFIG,channels_cnt=<n>,interval_units=<u>,cte_len=<l>,cte_type=<t>
+```
+
+- **错误情况**
+  - 未连接：
+    ```text
+    $ERR,DF_CONFIG,1,NOT_CONNECTED
+    ```
+  - CTE未启用：
+    ```text
+    $ERR,DF_CONFIG,2,CTE_NOT_ENABLED,use_DF_START_first
+    ```
+  - 参数无效（错误码3-6）：
+    ```text
+    $ERR,DF_CONFIG,3,INVALID_PARAM:channels
+    $ERR,DF_CONFIG,4,INVALID_PARAM:interval_ms
+    $ERR,DF_CONFIG,5,INVALID_PARAM:cte_len
+    $ERR,DF_CONFIG,6,INVALID_PARAM:cte_type
+    ```
+  - 信道映射更新失败：
+    ```text
+    $ERR,DF_CONFIG,7,channel_map_update_failed,err=<err>
+    ```
+
+- **行为说明**
+  - 此命令**不会重新enable CTE REQ**，因此不会中断CTE数据接收
+  - `channels`参数会立即生效，直接更新信道映射
+  - `interval_ms`参数只更新值，需要重新连接才能生效
+  - `cte_len`和`cte_type`参数只更新值，需要`DF_START`才能生效（会重新enable CTE REQ）
+
+- **完整示例 1：动态切换信道（不中断）**
+
+发送：
+```text
+$CMD,DF_CONFIG,channels=7
+```
+
+收到：
+```text
+$OK,DF_CONFIG,channels_cnt=1,interval_units=20,cte_len=2,cte_type=1
+```
+
+CTE数据会继续接收，但信道从之前的信道切换到信道7。
+
+- **完整示例 2：修改多个参数**
+
+发送：
+```text
+$CMD,DF_CONFIG,channels=10|25,interval_ms=30
+```
+
+收到：
+```text
+$OK,DF_CONFIG,channels_cnt=2,interval_units=24,cte_len=2,cte_type=1
+Note: interval_ms change will take effect on next connection
+```
+
+- **完整示例 3：修改cte_len（需要DF_START生效）**
+
+发送：
+```text
+$CMD,DF_CONFIG,cte_len=4
+```
+
+收到：
+```text
+$OK,DF_CONFIG,channels_cnt=1,interval_units=20,cte_len=4,cte_type=1
+Note: cte_len/cte_type changes require DF_START to take effect
+```
+
+此时参数已更新，但需要执行`DF_START`才能生效。
+
+- **与DF_START的区别**
+
+| 特性 | DF_START | DF_CONFIG |
+|------|----------|-----------|
+| 用途 | 启动/重新启动DF功能 | 在DF运行时动态修改参数 |
+| CTE REQ | 会重新enable（可能短暂中断） | 不重新enable（不中断） |
+| channels | 立即生效 | 立即生效 |
+| interval_ms | 立即生效（如果已连接） | 下次连接生效 |
+| cte_len/cte_type | 立即生效 | 需要DF_START才能生效 |
+| 前置条件 | 无（可启动扫描） | 必须已连接且CTE已启用 |
+
+---
+
+### 6) `DF_STOP`
 
 - **用途**：停止/禁用 CTE request/rx（若已连接）
 - **请求**：
@@ -249,7 +357,7 @@ $OK,DF_STOP,done
 
 ---
 
-### 6) 未知命令
+### 7) 未知命令
 
 - 请求：
 
@@ -288,6 +396,14 @@ $EVT,BLE,scan_started
 $EVT,BLE,connected,addr=xx:xx:xx:xx:xx:xx
 $EVT,DF,cte_enabled,len=20,type=2,intv=1
 $DF,1,<chan>,<seq>,<ts_ms>,<p_avg>
+...
+
+(host - 在DF运行时动态切换信道，不中断)
+$CMD,DF_CONFIG,channels=7
+
+(device)
+$OK,DF_CONFIG,channels_cnt=1,interval_units=20,cte_len=20,cte_type=2
+$DF,1,7,<seq>,<ts_ms>,<p_avg>  (信道已切换到7，CTE数据继续接收)
 ...
 ```
 
