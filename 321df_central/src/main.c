@@ -51,6 +51,9 @@ static uint8_t g_cte_len = 0x02; /* unit 8us */
 static uint8_t g_cte_req_interval = 1U; /* connection events */
 static uint8_t g_cte_type = BT_DF_CTE_TYPE_AOA;
 
+/* CTE状态标志：跟踪CTE是否已启用 */
+static bool g_cte_enabled = false;
+
 /* 自定义信道列表（由命令设置） */
 static uint8_t g_channels[10] = {3};
 static size_t g_channel_cnt = 1;
@@ -62,6 +65,7 @@ static const uint8_t ant_patterns[] = {0x2, 0x0, 0x5, 0x6, 0x1, 0x4,
 
 static void start_scan(void);
 
+/* 打印当前连接的发射功率 */
 static void print_conn_tx_power(struct bt_conn *conn)
 {
     int err;
@@ -128,12 +132,13 @@ static void device_found(const bt_addr_le_t *addr, int8_t rssi, uint8_t type,
 }
 
 /*  单信道是不合规的，至少需要双信道才合规。但我们只启用一个也能跑，看起来sdc没有限制。这和ble
- cs的情况完全不同 */
+ cs的14信道限制完全不同 */
 static bool is_valid_data_channel(uint8_t ch)
 {
     return (ch <= 36);
 }
 
+/* 根据自定义信道映射列表，发送HCI命令控制对方CTE的发包信道 */
 int set_custom_channel_map_from_list(const uint8_t *channels,
                                      size_t channel_cnt)
 {
@@ -211,14 +216,17 @@ static void enable_cte_request(void)
     err = bt_df_conn_cte_req_enable(default_conn, &cte_req_params);
     if (err) {
         printk("failed (err %d)\n", err);
+        g_cte_enabled = false;
         return;
     }
     printk("success. CTE request enabled.\n");
+    g_cte_enabled = true;
 }
 
 static void disable_cte_request(void)
 {
     if (!default_conn) {
+        g_cte_enabled = false;
         return;
     }
 
@@ -233,6 +241,7 @@ static void disable_cte_request(void)
 #if defined(CONFIG_BT_DF_CONNECTION_CTE_REQ)
     (void)bt_df_conn_cte_req_disable(default_conn);
 #endif
+    g_cte_enabled = false;
 }
 
 static void start_scan(void)
@@ -372,6 +381,7 @@ static void disconnected(struct bt_conn *conn, uint8_t reason)
 
     bt_conn_unref(default_conn);
     default_conn = NULL;
+    g_cte_enabled = false;  /* 连接断开，重置CTE状态 */
 
     start_scan();
 }
@@ -394,32 +404,19 @@ BT_CONN_CB_DEFINE(conn_callbacks) = {
     .le_param_updated = le_param_updated_cb,
 };
 
-/* ---------- 命令解析辅助 ---------- */
+/* ---------- 业务相关的解析辅助函数 ---------- */
 
-static const char *kv_find(int argc, const char *argv[], const char *key)
-{
-    size_t klen = strlen(key);
-    for (int i = 0; i < argc; i++) {
-        const char *s = argv[i];
-        if (!s) continue;
-        if (!strncmp(s, key, klen) && s[klen] == '=') {
-            return s + klen + 1;
-        }
-    }
-    return NULL;
-}
-
-static int parse_u32(const char *s, uint32_t *out)
-{
-    if (!s || !out) return -EINVAL;
-    char *end = NULL;
-    unsigned long v = strtoul(s, &end, 10);
-    if (end == s || *end != '\0') return -EINVAL;
-    *out = (uint32_t)v;
-    return 0;
-}
-
-/* "3|10|25" -> [3,10,25] */
+/**
+ * @brief 解析管道符分隔的信道列表字符串
+ * 
+ * 将格式为"3|10|25"的字符串解析为数组[3,10,25]
+ * 
+ * @param s 待解析的字符串（格式：数字|数字|数字...）
+ * @param out 输出数组，存储解析出的信道号
+ * @param out_cap out数组的容量
+ * @param out_cnt 输出参数，存储实际解析出的信道数量
+ * @return 0 成功，-EINVAL 参数无效，-ENOMEM 数组容量不足
+ */
 static int parse_channels(const char *s, uint8_t *out, size_t out_cap, size_t *out_cnt)
 {
     if (!s || !out || !out_cnt) return -EINVAL;
@@ -429,42 +426,68 @@ static int parse_channels(const char *s, uint8_t *out, size_t out_cap, size_t *o
     while (*p) {
         char *end = NULL;
         unsigned long v = strtoul(p, &end, 10);
-        if (end == p) return -EINVAL;
-        if (v > 255) return -EINVAL;
+        if (end == p) return -EINVAL;  /* 无法解析数字 */
+        if (v > 255) return -EINVAL;   /* 超出uint8_t范围 */
 
         if (*out_cnt >= out_cap) return -ENOMEM;
         out[(*out_cnt)++] = (uint8_t)v;
 
-        if (*end == '\0') break;
-        if (*end != '|') return -EINVAL;
-        p = end + 1;
+        if (*end == '\0') break;       /* 字符串结束 */
+        if (*end != '|') return -EINVAL;  /* 分隔符必须是'|' */
+        p = end + 1;  /* 移动到下一个数字 */
     }
     return 0;
 }
 
-/* interval_ms 必须能转成 1.25ms units：units = interval_ms * 100 / 125 */
+/**
+ * @brief 将毫秒间隔转换为BLE连接间隔单位（1.25ms units）
+ * 
+ * BLE连接间隔以1.25ms为单位，范围是7.5ms到4000ms
+ * 转换公式：units = interval_ms * 100 / 125
+ * 
+ * @param interval_ms 毫秒间隔（必须是1.25ms的整数倍）
+ * @param units 输出参数，存储转换后的单位数
+ * @return 0 成功，-EINVAL 参数无效，-ERANGE 超出有效范围
+ */
 static int interval_ms_to_units(uint32_t interval_ms, uint16_t *units)
 {
     if (!units) return -EINVAL;
-    /* 用整数避免浮点：检查 interval_ms*100 是否能被125整除 */
+    /* 用整数运算避免浮点：检查 interval_ms*100 是否能被125整除 */
     uint32_t x = interval_ms * 100U;
-    if ((x % 125U) != 0U) return -EINVAL;
+    if ((x % 125U) != 0U) return -EINVAL;  /* 不是1.25ms的整数倍 */
 
     uint32_t u = x / 125U;
-    if (u < 6U || u > 3200U) return -ERANGE; /* BLE spec: 7.5ms..4s */
+    if (u < 6U || u > 3200U) return -ERANGE; /* BLE规范：7.5ms(6*1.25)..4s(3200*1.25) */
     *units = (uint16_t)u;
     return 0;
 }
 
+/**
+ * @brief 命令处理主函数
+ * 
+ * 该函数由uart_cmd模块在解析到有效命令后调用
+ * 支持的命令：
+ * - PING: 心跳测试
+ * - BLE_SCAN: 控制BLE扫描（start/stop）
+ * - BLE_CONN: 控制BLE连接（disconnect）
+ * - DF_START: 启动Direction Finding功能
+ * - DF_STOP: 停止Direction Finding功能
+ * 
+ * @param cmd 命令名称
+ * @param argc 参数个数
+ * @param argv 参数数组，格式可能是"key=value"或普通字符串
+ */
 static void on_cmd(const char *cmd, int argc, const char *argv[])
 {
+    /* PING命令：用于测试串口通信是否正常 */
     if (!strcmp(cmd, "PING")) {
         uart_cmd_send_ok("PING", "pong");
         return;
     }
 
+    /* BLE_SCAN命令：控制BLE扫描 */
     if (!strcmp(cmd, "BLE_SCAN")) {
-        const char *act = kv_find(argc, argv, "action");
+        const char *act = uart_cmd_kv_find(argc, argv, "action");
         if (!act) {
             uart_cmd_send_err("BLE_SCAN", 1, "MISSING_PARAM:action");
             return;
@@ -489,8 +512,9 @@ static void on_cmd(const char *cmd, int argc, const char *argv[])
         return;
     }
 
+    /* BLE_CONN命令：控制BLE连接 */
     if (!strcmp(cmd, "BLE_CONN")) {
-        const char *act = kv_find(argc, argv, "action");
+        const char *act = uart_cmd_kv_find(argc, argv, "action");
         if (!act) {
             uart_cmd_send_err("BLE_CONN", 1, "MISSING_PARAM:action");
             return;
@@ -513,9 +537,16 @@ static void on_cmd(const char *cmd, int argc, const char *argv[])
         return;
     }
 
+    /* DF_START命令：启动Direction Finding功能
+     * 参数（均为可选）：
+     *   - channels: 信道列表，格式"3|10|25"（管道符分隔）
+     *   - interval_ms: 连接间隔（毫秒，必须是1.25ms的整数倍）
+     *   - cte_len: CTE长度（8us单位）
+     *   - cte_type: CTE类型（"aod1"/"aod2"/"aoa"）
+     */
     if (!strcmp(cmd, "DF_START")) {
         /* channels */
-        const char *chs = kv_find(argc, argv, "channels");
+        const char *chs = uart_cmd_kv_find(argc, argv, "channels");
         if (chs) {
             size_t cnt = 0;
             uint8_t tmp[ARRAY_SIZE(g_channels)];
@@ -529,11 +560,11 @@ static void on_cmd(const char *cmd, int argc, const char *argv[])
         }
 
         /* interval_ms */
-        const char *ims = kv_find(argc, argv, "interval_ms");
+        const char *ims = uart_cmd_kv_find(argc, argv, "interval_ms");
         if (ims) {
             uint32_t interval_ms = 0;
             uint16_t units = 0;
-            if (parse_u32(ims, &interval_ms) ||
+            if (uart_cmd_parse_u32(ims, &interval_ms) ||
                 interval_ms_to_units(interval_ms, &units)) {
                 uart_cmd_send_err("DF_START", 2, "INVALID_PARAM:interval_ms");
                 return;
@@ -543,18 +574,18 @@ static void on_cmd(const char *cmd, int argc, const char *argv[])
         }
 
         /* cte_len (8us units) */
-        const char *cl = kv_find(argc, argv, "cte_len");
+        const char *cl = uart_cmd_kv_find(argc, argv, "cte_len");
         if (cl) {
-            uint32_t v = 0;
-            if (parse_u32(cl, &v) || v > 0xFF) {
+            uint8_t v = 0;
+            if (uart_cmd_parse_u8(cl, &v)) {
                 uart_cmd_send_err("DF_START", 3, "INVALID_PARAM:cte_len");
                 return;
             }
-            g_cte_len = (uint8_t)v;
+            g_cte_len = v;
         }
 
         /* cte_type: aod1/aod2/aoa (若编译支持 AOA RX) */
-        const char *ct = kv_find(argc, argv, "cte_type");
+        const char *ct = uart_cmd_kv_find(argc, argv, "cte_type");
         if (ct) {
             if (!strcmp(ct, "aod1")) g_cte_type = BT_DF_CTE_TYPE_AOD_1US;
             else if (!strcmp(ct, "aod2")) g_cte_type = BT_DF_CTE_TYPE_AOD_2US;
@@ -580,32 +611,52 @@ static void on_cmd(const char *cmd, int argc, const char *argv[])
             return;
         }
 
-        /* 已连接：立即应用信道图 + 重新 enable */
+        /* 已连接：如果CTE已启用，先disable再enable（避免重复启用错误） */
+        if (g_cte_enabled) {
+            printk("CTE already enabled, disabling before re-enable...\n");
+            disable_cte_request();
+        }
+        
+        /* 应用新的信道映射 */
         (void)set_custom_channel_map_from_list(g_channels, g_channel_cnt);
+        
+        /* 重新启用CTE（使用新的参数） */
         enable_cte_request();
         return;
     }
 
+    /* DF_STOP命令：停止Direction Finding功能 */
     if (!strcmp(cmd, "DF_STOP")) {
         disable_cte_request();
         uart_cmd_send_ok("DF_STOP", "done");
         return;
     }
 
+    /* 未知命令 */
     uart_cmd_send_err(cmd, 99, "UNKNOWN_CMD");
 }
 
+/**
+ * @brief 主函数
+ * 
+ * 系统初始化流程：
+ * 1. 初始化串口命令接收系统（uart_cmd_init）
+ * 2. 初始化蓝牙协议栈（bt_enable）
+ * 3. 自动启动BLE扫描
+ */
 int main(void)
 {
     int err;
 
     printk("BOOT: console up\r\n");
 
+    /* 初始化串口命令接收系统，注册命令处理回调函数 */
     err = uart_cmd_init(on_cmd);
     if (err) {
         printk("uart_cmd_init failed (err %d)\n", err);
     }
 
+    /* 初始化蓝牙协议栈 */
     err = bt_enable(NULL);
     if (err) {
         printk("Bluetooth init failed (err %d)\n", err);
