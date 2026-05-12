@@ -5,9 +5,9 @@
  */
 
 /** @file
- *  @brief Channel Sounding Initiator with Ranging Requestor sample
+ *  @brief Channel Sounding Initiator with Direct IQ Pipeline
  *  @author Cheng Wang, cwang199@connect.hkust-gz.edu.cn;
- *  @date 2025-08-15
+ *  @date 2026-05-12
  *  @version 1.0
  *  @note This project is modified from Nordic Connect SDK Channel Sounding
  *        sample.
