@@ -102,6 +102,11 @@ static const uint32_t TEST_RANGING_COUNT = 25; // 测试测距次数
 #define APP_CS_DIP_BYPASS_RAS 1
 #endif
 
+/* DIP 报告打印：0 仅一行 pc（减轻 UART/deferred log，便于对比 abort 是否减轻）；1 为多信道 IQ 详版 */
+#ifndef DIP_REPORT_LOG_VERBOSE
+#define DIP_REPORT_LOG_VERBOSE 1
+#endif
+
 #define CON_STATUS_LED DK_LED1
 
 #define CS_CONFIG_ID 0
@@ -175,7 +180,7 @@ static const struct bt_le_cs_set_procedure_parameters_param procedure_params = {
     .config_id = CS_CONFIG_ID,
     .max_procedure_len = 500,
     .min_procedure_interval = 1,
-    .max_procedure_interval = 10,
+    .max_procedure_interval = 3,
     .max_procedure_count = 0,
     .min_subevent_len = 10000,
     .max_subevent_len = 40000, // 这个就是us
@@ -679,7 +684,32 @@ static void dip_parse_local_iq_from_subevent(const struct bt_conn_le_cs_subevent
 
   bt_le_cs_step_data_parse(&buf, dip_local_step_iq_cb, &dip_parse_work_ctx);
 
+#if DIP_REPORT_LOG_VERBOSE
   dip_print_local_report_multichannel(&dip_parse_work_ctx);
+#else
+  /* 仅证明收到并完成解析，不刷屏；若需多信道 IQ，将 DIP_REPORT_LOG_VERBOSE 置 1 */
+  LOG_INF("DIP ok pc=%u", dip_parse_work_ctx.procedure_counter);
+#endif
+}
+
+/**
+ * HCI subevent abort reason 的简短说明，便于串口对照 Core Spec / hci_types.h
+ */
+static const char *dip_subevent_abort_reason_str(enum bt_conn_le_cs_subevent_abort_reason r) {
+  switch (r) {
+  case BT_CONN_LE_CS_SUBEVENT_NOT_ABORTED:
+    return "no_abort";
+  case BT_CONN_LE_CS_SUBEVENT_ABORT_REQUESTED:
+    return "host_or_peer_request";
+  case BT_CONN_LE_CS_SUBEVENT_ABORT_NO_CS_SYNC:
+    return "no_cs_sync";
+  case BT_CONN_LE_CS_SUBEVENT_ABORT_SCHED_CONFLICT:
+    return "sched_conflict";
+  case BT_CONN_LE_CS_SUBEVENT_ABORT_UNSPECIFIED:
+    return "unspecified";
+  default:
+    return "unknown";
+  }
 }
 
 /**
@@ -695,7 +725,12 @@ static void subevent_result_dip_cb(struct bt_conn *conn,
   }
 
   if (result->header.subevent_done_status == BT_CONN_LE_CS_SUBEVENT_ABORTED) {
-    LOG_WRN("DIP: subevent aborted, pc=%u", result->header.procedure_counter);
+    LOG_WRN("DIP: subevent aborted pc=%u reason=%u (%s) n_steps=%u abort_step=%u proc_done_st=%u",
+            result->header.procedure_counter,
+            (unsigned int)result->header.subevent_abort_reason,
+            dip_subevent_abort_reason_str(result->header.subevent_abort_reason),
+            result->header.num_steps_reported, result->header.abort_step,
+            (unsigned int)result->header.procedure_done_status);
     return;
   }
 
