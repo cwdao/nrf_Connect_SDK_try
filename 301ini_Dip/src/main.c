@@ -158,7 +158,8 @@ static struct bt_le_cs_create_config_params config_params = {
 };
 
 // 测距参数：interval应该是最核心的一个。假设一个procedure是50ms，那么采样间隔就是间隔N个50ms
-// 功率差：-1 = 0xff, -2 = 0xfe, -3 = 0xfd,-4 = 0xfc,-5 = 0xfb, -6 = 0xfa,-7 = 0xf9,-8 = 0xf8
+// 功率差：-1 = 0xff, -2 = 0xfe, -3 = 0xfd,-4 = 0xfc,-5 = 0xfb, -6 = 0xfa,-7 =
+// 0xf9,-8 = 0xf8
 static const struct bt_le_cs_set_procedure_parameters_param procedure_params = {
     .config_id = CS_CONFIG_ID,
     .max_procedure_len = 500,
@@ -169,7 +170,7 @@ static const struct bt_le_cs_set_procedure_parameters_param procedure_params = {
     .max_subevent_len = 40000, // 这个就是us
     .tone_antenna_config_selection = BT_LE_CS_TONE_ANTENNA_CONFIGURATION_A1_B1,
     .phy = BT_LE_CS_PROCEDURE_PHY_2M,
-    .tx_power_delta = 0x80, //0x80 means no power difference
+    .tx_power_delta = 0x80, // 0x80 means no power difference
     .preferred_peer_antenna = BT_LE_CS_PROCEDURE_PREFERRED_PEER_ANTENNA_1,
     .snr_control_initiator = BT_LE_CS_SNR_CONTROL_NOT_USED,
     .snr_control_reflector = BT_LE_CS_SNR_CONTROL_NOT_USED,
@@ -468,7 +469,7 @@ static void subevent_result_cb(struct bt_conn *conn,
         net_buf_simple_tailroom(&latest_local_steps)) {
       uint16_t len = result->step_data_buf->len;
       uint8_t *step_data = net_buf_simple_pull_mem(result->step_data_buf, len);
-
+      // 这一步把 HCI 上报的原始本地 step data 存起来，此时并没有解析成 IQ。
       net_buf_simple_add_mem(&latest_local_steps, step_data, len);
     } else {
       LOG_ERR("Not enough memory to store step data. (%d > %d)",
@@ -497,7 +498,7 @@ static void subevent_result_cb(struct bt_conn *conn,
 static void ranging_data_ready_cb(struct bt_conn *conn,
                                   uint16_t ranging_counter) {
   LOG_DBG("Ranging data ready %i", ranging_counter);
-//此处首先检查本地和对端数据是否对齐。然后立刻调用Get_ranging_data取回下一步
+  // 此处首先检查本地和对端数据是否对齐。然后立刻调用Get_ranging_data取回下一步
   if (ranging_counter == most_recent_local_ranging_counter) {
     int err = bt_ras_rreq_cp_get_ranging_data(connection, &latest_peer_steps,
                                               ranging_counter,
@@ -758,22 +759,23 @@ static int scan_init(void) {
                                      .conn_param = BT_LE_CONN_PARAM_DEFAULT,
                                      .connect_if_match = 1};
 
-// 我添加了interval_max用于配置连接间隔，40=50ms,16=20ms
+  // 我添加了interval_max用于配置连接间隔，40=50ms,16=20ms
   static struct bt_le_conn_param custom_conn_param = {
-      .interval_min = 6, // 最小连接间隔 (7.5ms)
+      .interval_min = 6,  // 最小连接间隔 (7.5ms)
       .interval_max = 40, // 最大连接间隔 (7.5ms，1.25ms unit)
-      .latency = 0,      // 从设备延迟
-      .timeout = 400,    // 监督超时 (400 * 10ms = 4秒)
+      .latency = 0,       // 从设备延迟
+      .timeout = 400,     // 监督超时 (400 * 10ms = 4秒)
   };
 
-  struct bt_scan_init_param param_on_conn = {.scan_param = NULL,
-                                     .conn_param =
-                                         &custom_conn_param, // 使用自定义参数
-                                     .connect_if_match = 1};
+  struct bt_scan_init_param param_on_conn = {
+      .scan_param = NULL,
+      .conn_param = &custom_conn_param, // 使用自定义参数
+      .connect_if_match = 1};
 
   bt_scan_init(&param_on_conn);
   bt_scan_cb_register(&scan_cb);
-  // 过滤了具有ranging service 的设备，ini作为client，ref 反而是RAS的服务器。ini会定期取ref发来的数据。
+  // 过滤了具有ranging service 的设备，ini作为client，ref
+  // 反而是RAS的服务器。ini会定期取ref发来的数据。
   err = bt_scan_filter_add(BT_SCAN_FILTER_TYPE_UUID, BT_UUID_RANGING_SERVICE);
   if (err) {
     LOG_ERR("Scanning filters cannot be set (err %d)", err);
