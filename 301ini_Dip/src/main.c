@@ -19,9 +19,14 @@
 #include <bluetooth/scan.h>
 #include <bluetooth/services/ras.h>
 #include <math.h>
+#include <stdbool.h>
+#include <stdio.h>
+#include <string.h>
 #include <zephyr/bluetooth/conn.h>
 #include <zephyr/bluetooth/cs.h>
 #include <zephyr/bluetooth/gatt.h>
+#include <zephyr/bluetooth/hci_types.h>
+#include <zephyr/net_buf.h>
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/kernel.h>
 #include <zephyr/sys/reboot.h>
@@ -90,6 +95,12 @@ static const uint32_t TEST_RANGING_COUNT = 25; // 测试测距次数
 #endif
 
 #define NEED_LOG 0 // 是否需要信息输出（用于提升速度）
+
+/* DIP 第一版：为 1 时在 main() 中跳过 RAS 订阅，仅走本地 HCI subevent 解析，避免 ranging 回调与
+ * latest_local_steps 不同步。恢复旧测距链路时改为 0。不影响 legacy 源码保留与编译。 */
+#ifndef APP_CS_DIP_BYPASS_RAS
+#define APP_CS_DIP_BYPASS_RAS 1
+#endif
 
 #define CON_STATUS_LED DK_LED1
 
@@ -440,6 +451,263 @@ static void ranging_data_get_complete_cb(struct bt_conn *conn,
   // printk("Cb exec : %llu ns\n", elapsed_ns);
 }
 
+/* =============================================================================
+ * Direct IQ Pipeline (DIP)：从 HCI LE CS Subevent Result 的 step_data 中直接取本地 PCT，
+ * 调用栈提供的 bt_le_cs_parse_pct() 转为 IQ 并打印。不依赖 RAS / peer steps，也不调用
+ * cs_de_populate_report / cs_de_calc。
+ *
+ * tone/AP 索引方式与 Nordic cs_de.c::extract_pcts() 一致：按 tone_index 查 permutation
+ * 表得到 antenna_path，再读 tone_info[antenna_path]。
+ *
+ * 注意：bt_le_cs_step_data_parse() 会消耗缓冲区，因此必须先 memcpy 到本地缓存再解析。
+ *
+ * 信道编号：每个 step 的 step->channel 为 HCI 信道索引；与 cs_de 相同地定义
+ * fft 下标 ch = hci_ch - CHANNEL_INDEX_OFFSET（见 DIP_CS_CHANNEL_INDEX_OFFSET）。
+ * 单次 subevent 内通常有十余至数十个 step（你提到的约 15～72 个信道），先在 ctx 中
+ * 按 (ap, ch) 聚合，再按 print_report_basic 风格分块（每行 8 个信道）打印，格式为仅本地的
+ * ch(i,q)，不含对端项以缩短串口输出。
+ * ============================================================================= */
+
+/** 与 cs_de 中 CHANNEL_INDEX_OFFSET 一致，IQ[ch] 的 ch 与 cs_de_data_parse 中使用的 fft 下标一致 */
+#define DIP_CS_CHANNEL_INDEX_OFFSET 2U
+
+/**
+ * 与 cs_de.c 中 NUM_CHANNELS(75) 对齐的 IQ 下标上界；规范下单次报告常见约 15～72 个有效信道，
+ * 数组留出完整 fft 格点便于与 print_report_basic 的 IQ[0..max] 窗口一致。
+ */
+#define DIP_MAX_FFT_CHANNELS 75
+
+/** 每个 (天线, fft 信道) 上一组本地 IQ；valid 表示本报告内该格点有 HIGH quality 的 PCT */
+struct dip_ch_sample {
+  int16_t i;
+  int16_t q;
+  bool valid;
+};
+
+/** 传给 bt_le_cs_step_data_parse 的解析上下文：解析结束后一次性多信道打印 fill ch[][] */
+struct dip_step_parse_ctx {
+  /** procedure_counter：本条 subevent 所属的 CS procedure 计数 */
+  uint16_t procedure_counter;
+  /** 本 subevent HCI 头中的天线路径数，对应 cs_de_report::n_ap / extract_pcts 循环上界 */
+  uint8_t n_ap;
+  struct dip_ch_sample ch[CONFIG_BT_RAS_MAX_ANTENNA_PATHS][DIP_MAX_FFT_CHANNELS];
+};
+
+/*
+ * DIP step_data 拷贝缓冲 + 解析上下文必须放在 BSS，不可放在 dip_parse_local_iq_from_subevent()
+ * 的栈上：该函数经由 .le_cs_subevent_data_available 在「BT RX WQ」里调用，该线程栈很小
+ *（通常约 1k～2k），而 LOCAL_PROCEDURE_MEM  alone 即可达数 KB，叠加大 ctx 与调用链后必然
+ * 触发 Usage Fault: Stack overflow。单连接下 subevent 串行投递，静态工作区可安全复用
+ * （与同文件 legacy 的 static cs_de_report 同理）。
+ */
+static uint8_t dip_step_data_copy[LOCAL_PROCEDURE_MEM];
+static struct dip_step_parse_ctx dip_parse_work_ctx;
+
+/**
+ * 分块打印本地 IQ（每行最多 8 个信道，与 print_report_basic 的窗口划分一致）；
+ * 每点格式 ch(i,q)，无 remote。某 8 信道窗口内若没有任何有效测量则整行跳过。
+ */
+static void dip_print_local_report_multichannel(const struct dip_step_parse_ctx *ctx) {
+  const int max_output_channels = DIP_MAX_FFT_CHANNELS;
+
+  LOG_INF("DIP local report pc=%u n_ap=%u (IQ[ch]: ch=hci_ch-%u; local-only ch(i,q))",
+          ctx->procedure_counter, ctx->n_ap, DIP_CS_CHANNEL_INDEX_OFFSET);
+
+  for (uint8_t ap = 0; ap < ctx->n_ap; ap++) {
+    LOG_INF("-- DIP Antenna Path %u --", ap);
+
+    const int channels_per_line = 8;
+
+    for (int ch_start = 0; ch_start < max_output_channels; ch_start += channels_per_line) {
+      int ch_end = ch_start + channels_per_line;
+      if (ch_end > max_output_channels) {
+        ch_end = max_output_channels;
+      }
+
+      int valid_ch[8];
+      int n_valid = 0;
+
+      for (int ch = ch_start; ch < ch_end && n_valid < channels_per_line; ch++) {
+        if (ctx->ch[ap][ch].valid) {
+          valid_ch[n_valid++] = ch;
+        }
+      }
+
+      if (n_valid == 0) {
+        continue;
+      }
+
+      char iq_buffer[512];
+      int offset =
+          snprintf(iq_buffer, sizeof(iq_buffer), "AP%u IQ[%d-%d]: ", ap, ch_start, ch_end - 1);
+
+      if (offset < 0 || offset >= (int)sizeof(iq_buffer)) {
+        continue;
+      }
+
+      for (int i = 0; i < n_valid; i++) {
+        int ch = valid_ch[i];
+        if (i > 0) {
+          offset += snprintf(iq_buffer + offset, sizeof(iq_buffer) - (size_t)offset, " | ");
+        }
+        offset += snprintf(iq_buffer + offset, sizeof(iq_buffer) - (size_t)offset,
+                           "ch%d(i%.1f,q%.1f)", ch, (double)ctx->ch[ap][ch].i,
+                           (double)ctx->ch[ap][ch].q);
+      }
+
+      LOG_INF("%s", iq_buffer);
+    }
+  }
+}
+
+/**
+ * bt_le_cs_step_data_parse 回调：仅处理 main mode 2 / 3（含相位校正项 PCT）；其它 mode 跳过。
+ * 将 PCT 填入 ctx->ch[antenna_path][fft_ch]；同一格点重复出现则覆盖为最后一次。
+ */
+static bool dip_local_step_iq_cb(struct bt_le_cs_subevent_step *step, void *user_data) {
+  struct dip_step_parse_ctx *ctx = user_data;
+
+  if (step == NULL || ctx == NULL || ctx->n_ap == 0U) {
+    return true;
+  }
+
+  if (step->channel < DIP_CS_CHANNEL_INDEX_OFFSET) {
+    LOG_WRN("DIP: unexpected hci channel %u (pc=%u)", step->channel, ctx->procedure_counter);
+    return true;
+  }
+
+  unsigned fft_ch = (unsigned)(step->channel - DIP_CS_CHANNEL_INDEX_OFFSET);
+  if (fft_ch >= DIP_MAX_FFT_CHANNELS) {
+    LOG_WRN("DIP: fft_ch %u out of range (hci=%u pc=%u)", fft_ch, step->channel,
+            ctx->procedure_counter);
+    return true;
+  }
+
+  if (step->mode == BT_CONN_LE_CS_MAIN_MODE_2) {
+    const struct bt_hci_le_cs_step_data_mode_2 *data =
+        (const struct bt_hci_le_cs_step_data_mode_2 *)step->data;
+
+    for (uint8_t tone_index = 0; tone_index < ctx->n_ap; tone_index++) {
+      int antenna_path = bt_le_cs_get_antenna_path(
+          ctx->n_ap, data->antenna_permutation_index, tone_index);
+      if (antenna_path < 0) {
+        LOG_WRN("DIP: invalid antenna path (mode2 pc=%u hci_ch=%u tone=%u)", ctx->procedure_counter,
+                step->channel, tone_index);
+        continue;
+      }
+      if (antenna_path >= CONFIG_BT_RAS_MAX_ANTENNA_PATHS) {
+        continue;
+      }
+
+      if (data->tone_info[antenna_path].quality_indicator != BT_HCI_LE_CS_TONE_QUALITY_HIGH) {
+        continue;
+      }
+
+      struct bt_le_cs_iq_sample iq =
+          bt_le_cs_parse_pct(data->tone_info[antenna_path].phase_correction_term);
+
+      ctx->ch[antenna_path][fft_ch].i = iq.i;
+      ctx->ch[antenna_path][fft_ch].q = iq.q;
+      ctx->ch[antenna_path][fft_ch].valid = true;
+    }
+  } else if (step->mode == BT_CONN_LE_CS_MAIN_MODE_3) {
+    const struct bt_hci_le_cs_step_data_mode_3 *data =
+        (const struct bt_hci_le_cs_step_data_mode_3 *)step->data;
+
+    for (uint8_t tone_index = 0; tone_index < ctx->n_ap; tone_index++) {
+      int antenna_path = bt_le_cs_get_antenna_path(
+          ctx->n_ap, data->antenna_permutation_index, tone_index);
+      if (antenna_path < 0) {
+        LOG_WRN("DIP: invalid antenna path (mode3 pc=%u hci_ch=%u tone=%u)", ctx->procedure_counter,
+                step->channel, tone_index);
+        continue;
+      }
+      if (antenna_path >= CONFIG_BT_RAS_MAX_ANTENNA_PATHS) {
+        continue;
+      }
+
+      if (data->tone_info[antenna_path].quality_indicator != BT_HCI_LE_CS_TONE_QUALITY_HIGH) {
+        continue;
+      }
+
+      struct bt_le_cs_iq_sample iq =
+          bt_le_cs_parse_pct(data->tone_info[antenna_path].phase_correction_term);
+
+      ctx->ch[antenna_path][fft_ch].i = iq.i;
+      ctx->ch[antenna_path][fft_ch].q = iq.q;
+      ctx->ch[antenna_path][fft_ch].valid = true;
+    }
+  }
+
+  return true;
+}
+
+/**
+ * 拷贝一份 subevent 的 step_data 再解析，避免消费 Host 传入的 net_buf 影响其它逻辑。
+ */
+static void dip_parse_local_iq_from_subevent(const struct bt_conn_le_cs_subevent_result *result) {
+  if (result == NULL || result->step_data_buf == NULL) {
+    return;
+  }
+
+  if (result->step_data_buf->len == 0U) {
+    return;
+  }
+
+  struct net_buf_simple buf;
+
+  if (result->step_data_buf->len > sizeof(dip_step_data_copy)) {
+    LOG_ERR("DIP: step_data too large (%u)", result->step_data_buf->len);
+    return;
+  }
+
+  memcpy(dip_step_data_copy, result->step_data_buf->data, result->step_data_buf->len);
+  net_buf_simple_init_with_data(&buf, dip_step_data_copy, result->step_data_buf->len);
+
+  uint8_t n_ap = result->header.num_antenna_paths;
+  if (n_ap == 0U) {
+    n_ap = 1U;
+  }
+  if (n_ap > CONFIG_BT_RAS_MAX_ANTENNA_PATHS) {
+    n_ap = CONFIG_BT_RAS_MAX_ANTENNA_PATHS;
+  }
+
+  memset(&dip_parse_work_ctx, 0, sizeof(dip_parse_work_ctx));
+
+  dip_parse_work_ctx.procedure_counter = result->header.procedure_counter;
+  dip_parse_work_ctx.n_ap = n_ap;
+
+  bt_le_cs_step_data_parse(&buf, dip_local_step_iq_cb, &dip_parse_work_ctx);
+
+  dip_print_local_report_multichannel(&dip_parse_work_ctx);
+}
+
+/**
+ * DIP 专用 HCI subevent 回调：每条本地 report 到达即解析其中全部 step（即 procedure 内所有
+ * 已上报信道步进），不等待 RAS、不操作 sem_local_steps / latest_local_steps。
+ */
+static void subevent_result_dip_cb(struct bt_conn *conn,
+                                   struct bt_conn_le_cs_subevent_result *result) {
+  ARG_UNUSED(conn);
+
+  if (result == NULL) {
+    return;
+  }
+
+  if (result->header.subevent_done_status == BT_CONN_LE_CS_SUBEVENT_ABORTED) {
+    LOG_WRN("DIP: subevent aborted, pc=%u", result->header.procedure_counter);
+    return;
+  }
+
+  if (result->step_data_buf == NULL || result->step_data_buf->len == 0U) {
+    LOG_DBG("DIP: no step data (pc=%u)", result->header.procedure_counter);
+    return;
+  }
+
+  dip_parse_local_iq_from_subevent(result);
+}
+
+/* Legacy：原 RAS 对齐 + 缓存 latest_local_steps 流程。DIP 模式下不再注册本回调，仅保留编译与对照。 */
 // 每次测距子事件结束之后，得到了测距结果，会进入这个回调
 static void subevent_result_cb(struct bt_conn *conn,
                                struct bt_conn_le_cs_subevent_result *result) {
@@ -800,7 +1068,7 @@ BT_CONN_CB_DEFINE(conn_cb) = {
     .le_cs_config_complete = config_create_cb,
     .le_cs_security_enable_complete = security_enable_cb,
     .le_cs_procedure_enable_complete = procedure_enable_cb,
-    .le_cs_subevent_data_available = subevent_result_cb,
+    .le_cs_subevent_data_available = subevent_result_dip_cb,
 };
 
 // 工作队列任务处理函数。按键0负责启动蓝牙测距
@@ -1145,6 +1413,11 @@ int main(void) {
     return 0;
   }
 
+#if APP_CS_DIP_BYPASS_RAS
+  /* DIP：不订阅 RAS，避免 ranging_data_ready_cb 在 latest_local_steps 未由 legacy 回调填充时
+   * 仍拉取对端数据。恢复双端测距时将 APP_CS_DIP_BYPASS_RAS 置 0 并改回 subevent_result_cb。 */
+  LOG_INF("DIP mode: RAS RREQ subscriptions skipped");
+#else
   err = bt_ras_rreq_rd_overwritten_subscribe(connection,
                                              ranging_data_overwritten_cb);
   if (err) {
@@ -1169,6 +1442,7 @@ int main(void) {
     LOG_ERR("RAS RREQ CP subscribe failed (err %d)", err);
     return 0;
   }
+#endif
 
   err = bt_le_cs_read_remote_supported_capabilities(connection);
   if (err) {
