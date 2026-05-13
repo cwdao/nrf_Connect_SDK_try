@@ -1,18 +1,16 @@
 #
-# Copyright (c) 2024 Nordic Semiconductor
+# Copyright (c) 2022 Nordic Semiconductor ASA
 #
 # SPDX-License-Identifier: LicenseRef-Nordic-5-Clause
-#
-set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
 cmake_minimum_required(VERSION 3.20.0)
 
 find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
-project(cs_ini1)
 
-FILE(GLOB app_sources src/*.c)
+project(301df_central)
+
 # NORDIC SDK APP START
 target_sources(app PRIVATE
-	${app_sources}
+  src/main.c
 )
 # NORDIC SDK APP END
-

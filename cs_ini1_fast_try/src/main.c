@@ -351,6 +351,7 @@ static void set_custom_channel_map(uint8_t channel_map[10]) {
   // 定义启用的信道集合。例如：启用信道 2、3、10、11
   uint8_t valid_channels[] = {2,  5,  8,  11, 14, 17, 20, 23, 26, 29, 32,
                               35, 38, 41, 44, 47, 50};
+  // uint8_t valid_channels[] = {2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2};
 
   // 遍历启用的信道集合，将对应 bit 设置为有效
   for (size_t i = 0; i < sizeof(valid_channels) / sizeof(valid_channels[0]);
@@ -475,23 +476,23 @@ int main(void) {
       .id = CS_CONFIG_ID,
       .main_mode_type = BT_CONN_LE_CS_MAIN_MODE_2,
       .sub_mode_type = BT_CONN_LE_CS_SUB_MODE_UNUSED,
-      .min_main_mode_steps = 10,
-      .max_main_mode_steps = 20,
+      .min_main_mode_steps = 5,
+      .max_main_mode_steps = 10,
       .main_mode_repetition = 0,
       .mode_0_steps = NUM_MODE_0_STEPS,
       .role = BT_CONN_LE_CS_ROLE_INITIATOR,
       .rtt_type = BT_CONN_LE_CS_RTT_TYPE_AA_ONLY,
-      .cs_sync_phy = BT_CONN_LE_CS_SYNC_1M_PHY,
-      .channel_map_repetition = 5,
+      .cs_sync_phy = BT_CONN_LE_CS_SYNC_2M_PHY,
+      .channel_map_repetition = 1,
       .channel_selection_type = BT_CONN_LE_CS_CHSEL_TYPE_3B,
       .ch3c_shape = BT_CONN_LE_CS_CH3C_SHAPE_HAT,
-      .ch3c_jump = 2,
+      .ch3c_jump = 1,
   };
 
   bt_le_cs_set_valid_chmap_bits(config_params.channel_map);
 
   // 在这个函数内部修改使用的通道
-//   set_custom_channel_map(config_params.channel_map);
+  set_custom_channel_map(config_params.channel_map);
 
   // 创建信道探测配置，指定探测模式、步数、天线配置等
   err = bt_le_cs_create_config(connection, &config_params,
@@ -514,11 +515,11 @@ int main(void) {
   const struct bt_le_cs_set_procedure_parameters_param procedure_params = {
       .config_id = CS_CONFIG_ID,
       .max_procedure_len = 100,
-      .min_procedure_interval = 1,
-      .max_procedure_interval = 1,
+      .min_procedure_interval = 10,//do not larger than 5 until new data collected method is enbaled.
+      .max_procedure_interval = 10,
       .max_procedure_count = 0,
-      .min_subevent_len = 60000,
-      .max_subevent_len = 60000,
+      .min_subevent_len = 20000,
+      .max_subevent_len = 40000,
       .tone_antenna_config_selection =
           BT_LE_CS_TONE_ANTENNA_CONFIGURATION_INDEX_ONE,
       .phy = BT_LE_CS_PROCEDURE_PHY_1M,

@@ -1,0 +1,12 @@
+# editors
+*.swp
+*~
+
+# experiments logs
+*.csv
+*.log
+*.xlsx
+*.jsonl
+
+# build
+/build*/
