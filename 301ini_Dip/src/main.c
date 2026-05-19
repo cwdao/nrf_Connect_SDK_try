@@ -28,7 +28,11 @@
 #include <zephyr/bluetooth/hci_types.h>
 #include <zephyr/net_buf.h>
 #include <zephyr/drivers/gpio.h>
+/* 以下三头文件供 DIP_REPORT_BINARY_OUTPUT：设备绑定、uart_poll_out、LE 编解码 */
+#include <zephyr/device.h>
+#include <zephyr/drivers/uart.h>
 #include <zephyr/kernel.h>
+#include <zephyr/sys/byteorder.h>
 #include <zephyr/sys/reboot.h>
 #include <zephyr/sys_clock.h>
 #include <zephyr/types.h>
@@ -107,6 +111,25 @@ static const uint32_t TEST_RANGING_COUNT = 25; // 测试测距次数
 #define DIP_REPORT_LOG_VERBOSE 1
 #endif
 
+/*
+ * DIP 二进制 UART 输出开关（与 DIP_REPORT_LOG_VERBOSE 互斥，见 dip_parse_local_iq_from_subevent）：
+ *   1 — 解析完成后调用 dip_send_local_report_binary()，经 console UART 发原始字节帧；
+ *   0 — 保持原有 LOG_INF 文本输出（详版或多信道 IQ 行）。
+ * 测试二进制时建议同时将 DIP_REPORT_LOG_VERBOSE 置 0，并降低全局日志等级，避免 ASCII 与二进制混流。
+ */
+#ifndef DIP_REPORT_BINARY_OUTPUT
+#define DIP_REPORT_BINARY_OUTPUT 1
+#endif
+
+/*
+ * 预留线程化发送路径（当前未实现，仍为阻塞版）：
+ *   0 — 在 BT RX WQ（subevent 回调）内直接 uart_poll_out，实现最简单，可能拉长回调占用时间；
+ *   1 — 未来在回调内仅打包入 k_msgq，由独立线程消费并 dip_uart_send_bytes()。
+ */
+#ifndef DIP_BINARY_USE_THREAD
+#define DIP_BINARY_USE_THREAD 0
+#endif
+
 #define CON_STATUS_LED DK_LED1
 
 #define CS_CONFIG_ID 0
@@ -180,7 +203,7 @@ static const struct bt_le_cs_set_procedure_parameters_param procedure_params = {
     .config_id = CS_CONFIG_ID,
     .max_procedure_len = 500,
     .min_procedure_interval = 1,
-    .max_procedure_interval = 3,
+    .max_procedure_interval = 1,
     .max_procedure_count = 0,
     .min_subevent_len = 10000,
     .max_subevent_len = 40000, // 这个就是us
@@ -508,6 +531,286 @@ struct dip_step_parse_ctx {
 static uint8_t dip_step_data_copy[LOCAL_PROCEDURE_MEM];
 static struct dip_step_parse_ctx dip_parse_work_ctx;
 
+#if DIP_REPORT_BINARY_OUTPUT
+
+/* =============================================================================
+ * DIP 二进制 UART 输出（协议 v2：single AP + channel bitmap + int16 IQ）
+ *
+ * 设计目标：在保留 dip_local_step_iq_cb / ctx->ch[ap][ch] 解析结果的前提下，
+ * 用紧凑定长头 + 位图描述有效 fft 信道，再顺序附带 IQ，便于 PC 端高速解析。
+ *
+ * 线上字节序：除单字节字段外均为 little-endian（与 ARM / x86 PC 一致）。
+ *
+ * 完整帧布局（按发送顺序）：
+ *   [固定同步/类型 4B]
+ *     sync1=0x55, sync2=0xAA, version=0x01, type=0x01(DIP IQ)
+ *   [payload_len 2B LE]
+ *     从 procedure_counter 起至 IQ 区末尾的字节数（不含 sync..type、payload_len 自身、CRC）
+ *   [元数据 + 位图 16B]
+ *     procedure_counter(2), ap(1), iq_format(1), channel_count(1), reserved(1),
+ *     channel_bitmap[10]
+ *   [IQ 变长 4*channel_count B]
+ *     按 fft ch 升序，仅对 bitmap 对应位为 1 的信道各写 int16 i、int16 q
+ *   [crc16 2B LE]
+ *     CRC16-CCITT(0x1021)，初值 0xFFFF，覆盖从 sync1 到 IQ 区最后一字节
+ *
+ * 位图编码：channel_bitmap[k] 的 bit (ch%8) 表示 fft 下标 ch 是否有效；
+ *   ch 与 dip_parse 中 ctx->ch[ap][ch]、HCI 信道关系：ch = hci_ch - DIP_CS_CHANNEL_INDEX_OFFSET。
+ *   共 DIP_MAX_FFT_CHANNELS(75) 格点，需 ceil(75/8)=10 字节，最高 5 bit 保留未用。
+ *
+ * 当前限制：优先 n_ap=1；若 n_ap>1 仅发 ap=0 并 LOG_WRN，不拆多帧。
+ * 发送路径：console UART + uart_poll_out 阻塞发送（DIP_BINARY_USE_THREAD=0）。
+ * 帧缓冲 dip_bin_frame_buf 放 BSS，避免在 BT RX WQ 栈上分配数百字节。
+ * ============================================================================= */
+
+/** 帧同步字节 1，用于 PC 端串口流中定位帧起点 */
+#define DIP_BIN_SYNC1 0x55U
+/** 帧同步字节 2，与 sync1 组合降低误同步概率 */
+#define DIP_BIN_SYNC2 0xAAU
+/** 协议版本号；字段含义变更时递增，PC 端据此分支解析 */
+#define DIP_BIN_VERSION 0x01U
+/** 帧类型：0x01 表示本条为 DIP 本地 IQ 报告（后续可扩展其它 type） */
+#define DIP_BIN_TYPE_IQ 0x01U
+/** iq_format 字段：0 表示 IQ 载荷为 int16 有符号、小端 */
+#define DIP_BIN_IQ_FORMAT_INT16 0U
+/** 信道位图字节数：覆盖 75 个 fft 信道需 10 字节（80 bit，高 5 bit 未使用） */
+#define DIP_BIN_CHANNEL_BITMAP_BYTES 10U
+/**
+ * 单帧最大长度上界：头(22) + 全信道 IQ(75*4=300) + CRC(2) ≈ 324，取 400 留余量。
+ * 须 ≥ sizeof(dip_bin_header) + DIP_MAX_FFT_CHANNELS*4 + 2。
+ */
+#define DIP_BIN_MAX_FRAME_SIZE 400U
+
+/**
+ * 二进制帧固定头（packed，无编译器填充）。
+ * 其后紧接变长 IQ 区，再跟 2 字节 CRC；IQ 区不嵌入本结构体。
+ */
+struct __packed dip_bin_header {
+  uint8_t sync1;
+  uint8_t sync2;
+  uint8_t version;
+  uint8_t type;
+  /** 载荷长度：procedure_counter(2) + ap..reserved(4) + bitmap(10) + IQ 字节数 */
+  uint16_t payload_len;
+  /** 与 dip_step_parse_ctx::procedure_counter 一致，标识所属 CS procedure */
+  uint16_t procedure_counter;
+  /** 天线路径索引；当前实现固定发 0（单 AP 场景） */
+  uint8_t ap;
+  /** IQ 数值格式，见 DIP_BIN_IQ_FORMAT_INT16 */
+  uint8_t iq_format;
+  /** 本帧有效 fft 信道数，等于 channel_bitmap 中置 1 的位数 */
+  uint8_t channel_count;
+  /** 保留，填 0，供后续扩展（如缩放因子、质量标志等） */
+  uint8_t reserved;
+  /** 位图：bit ch 为 1 表示该 fft 信道在 IQ 区中占一对 (i,q) */
+  uint8_t channel_bitmap[DIP_BIN_CHANNEL_BITMAP_BYTES];
+};
+
+/** 与 Zephyr console 共用 UART，二进制与 LOG_* 可能混流，测试时请控制日志量 */
+static const struct device *dip_uart = DEVICE_DT_GET(DT_CHOSEN(zephyr_console));
+/** 整帧组装缓冲；静态分配，供 dip_send_local_report_binary() 复用 */
+static uint8_t dip_bin_frame_buf[DIP_BIN_MAX_FRAME_SIZE];
+
+/**
+ * 经 UART 逐字节阻塞发送（快速验证版）。
+ * @param data 待发送缓冲区首地址
+ * @param len  字节数；为 0 或设备未就绪时直接返回
+ */
+static void dip_uart_send_bytes(const uint8_t *data, size_t len)
+{
+  if (data == NULL || len == 0U) {
+    return;
+  }
+
+  if (!device_is_ready(dip_uart)) {
+    return;
+  }
+
+  for (size_t i = 0; i < len; i++) {
+    uart_poll_out(dip_uart, data[i]);
+  }
+}
+
+/**
+ * CRC16-CCITT（多项式 0x1021，初值 0xFFFF）。
+ * PC 端校验范围须与本函数一致：从帧首 sync1 到 IQ 区最后一字节（不含 CRC 域）。
+ *
+ * @param data 参与校验的数据
+ * @param len  字节长度
+ * @return 16 位 CRC，由调用方 sys_put_le16 写入帧尾
+ */
+static uint16_t dip_crc16_ccitt(const uint8_t *data, size_t len)
+{
+  uint16_t crc = 0xFFFFU;
+
+  if (data == NULL) {
+    return crc;
+  }
+
+  for (size_t i = 0; i < len; i++) {
+    crc ^= (uint16_t)data[i] << 8;
+    for (int bit = 0; bit < 8; bit++) {
+      if ((crc & 0x8000U) != 0U) {
+        crc = (uint16_t)((crc << 1) ^ 0x1021U);
+      } else {
+        crc <<= 1;
+      }
+    }
+  }
+
+  return crc;
+}
+
+/**
+ * 根据 ctx->ch[ap][ch].valid 填充信道位图并统计有效信道数。
+ * 数据来源与 dip_local_step_iq_cb 写入的格点一致，不二次解析 HCI。
+ *
+ * @param ctx           已完成 bt_le_cs_step_data_parse 的解析上下文
+ * @param ap            天线路径索引（当前调用方固定传 0）
+ * @param bitmap        输出至少 DIP_BIN_CHANNEL_BITMAP_BYTES 字节，调用前内容可被覆盖
+ * @param channel_count 输出置 1 的位数，与后续 IQ 区样本对数一致
+ */
+static void dip_bin_fill_channel_bitmap(const struct dip_step_parse_ctx *ctx, uint8_t ap,
+                                        uint8_t *bitmap, uint8_t *channel_count)
+{
+  memset(bitmap, 0, DIP_BIN_CHANNEL_BITMAP_BYTES);
+
+  if (ctx == NULL || bitmap == NULL || channel_count == NULL) {
+    if (channel_count != NULL) {
+      *channel_count = 0U;
+    }
+    return;
+  }
+
+  uint8_t count = 0U;
+
+  for (uint8_t ch = 0; ch < DIP_MAX_FFT_CHANNELS; ch++) {
+    if (!ctx->ch[ap][ch].valid) {
+      continue;
+    }
+
+    /* 小端位序：ch 0 对应 bitmap[0] 的 bit0，ch 7 对应 bit7，ch 8 对应 bitmap[1] 的 bit0 */
+    bitmap[ch / 8U] |= (uint8_t)(1U << (ch % 8U));
+    count++;
+  }
+
+  *channel_count = count;
+}
+
+/**
+ * 将有效信道的 i/q 顺序写入 IQ 载荷区（int16 little-endian）。
+ * 遍历顺序必须与位图生成时一致：ch 从 0 递增，仅处理 bitmap 中已置位的信道。
+ *
+ * @param ctx     解析上下文
+ * @param ap      天线路径
+ * @param bitmap  由 dip_bin_fill_channel_bitmap() 生成
+ * @param out     写入起点（通常为 dip_bin_frame_buf + sizeof(dip_bin_header)）
+ * @param out_max 允许写入的最大字节数（预留 CRC 空间由调用方扣除）
+ * @return 实际写入字节数，正常应为 channel_count * 4
+ */
+static size_t dip_bin_pack_iq_payload(const struct dip_step_parse_ctx *ctx, uint8_t ap,
+                                      const uint8_t *bitmap, uint8_t *out, size_t out_max)
+{
+  size_t offset = 0U;
+
+  if (ctx == NULL || bitmap == NULL || out == NULL) {
+    return 0U;
+  }
+
+  for (uint8_t ch = 0; ch < DIP_MAX_FFT_CHANNELS; ch++) {
+    if ((bitmap[ch / 8U] & (uint8_t)(1U << (ch % 8U))) == 0U) {
+      continue;
+    }
+
+    if (offset + sizeof(int16_t) + sizeof(int16_t) > out_max) {
+      break;
+    }
+
+    /* 强制转为 uint16_t 再写入，保留 int16 负值的位模式 */
+    sys_put_le16((uint16_t)ctx->ch[ap][ch].i, &out[offset]);
+    offset += sizeof(int16_t);
+    sys_put_le16((uint16_t)ctx->ch[ap][ch].q, &out[offset]);
+    offset += sizeof(int16_t);
+  }
+
+  return offset;
+}
+
+/**
+ * 将一次 subevent 解析结果打包为二进制帧并经 UART 发出。
+ * 调用时机：dip_parse_local_iq_from_subevent() 在 bt_le_cs_step_data_parse 返回之后。
+ *
+ * 流程：选 AP → 填位图 → 写头 → 写 IQ → 算 CRC → uart_poll_out 整帧发送。
+ */
+static void dip_send_local_report_binary(const struct dip_step_parse_ctx *ctx)
+{
+  if (ctx == NULL) {
+    return;
+  }
+
+  /* 当前协议按单 AP 设计；多 AP 时仅导出 ap=0，避免 PC 端误以为是多帧连续 */
+  uint8_t ap = 0U;
+
+  if (ctx->n_ap != 1U) {
+    LOG_WRN("DIP binary: n_ap=%u, sending ap=0 only", ctx->n_ap);
+  }
+
+  uint8_t channel_count = 0U;
+  uint8_t bitmap[DIP_BIN_CHANNEL_BITMAP_BYTES];
+
+  dip_bin_fill_channel_bitmap(ctx, ap, bitmap, &channel_count);
+
+  const size_t hdr_size = sizeof(struct dip_bin_header);
+  const size_t iq_size = (size_t)channel_count * 2U * sizeof(int16_t);
+  const size_t frame_len = hdr_size + iq_size + sizeof(uint16_t);
+
+  if (frame_len > sizeof(dip_bin_frame_buf)) {
+    LOG_WRN("DIP binary: frame too large (ch=%u)", channel_count);
+    return;
+  }
+
+  struct dip_bin_header *hdr = (struct dip_bin_header *)dip_bin_frame_buf;
+
+  hdr->sync1 = DIP_BIN_SYNC1;
+  hdr->sync2 = DIP_BIN_SYNC2;
+  hdr->version = DIP_BIN_VERSION;
+  hdr->type = DIP_BIN_TYPE_IQ;
+  hdr->procedure_counter = sys_cpu_to_le16(ctx->procedure_counter);
+  hdr->ap = ap;
+  hdr->iq_format = DIP_BIN_IQ_FORMAT_INT16;
+  hdr->channel_count = channel_count;
+  hdr->reserved = 0U;
+  memcpy(hdr->channel_bitmap, bitmap, DIP_BIN_CHANNEL_BITMAP_BYTES);
+
+  /*
+   * payload_len 不含 sync1..type(4B) 与 payload_len 自身(2B)，也不含 CRC(2B)。
+   * 含：procedure_counter(2) + ap/iq_format/channel_count/reserved(4) + bitmap(10) + IQ。
+   */
+  const uint16_t payload_len =
+      (uint16_t)(sizeof(hdr->procedure_counter) + sizeof(hdr->ap) + sizeof(hdr->iq_format) +
+                 sizeof(hdr->channel_count) + sizeof(hdr->reserved) +
+                 DIP_BIN_CHANNEL_BITMAP_BYTES + iq_size);
+
+  hdr->payload_len = sys_cpu_to_le16(payload_len);
+
+  const size_t iq_written =
+      dip_bin_pack_iq_payload(ctx, ap, bitmap, &dip_bin_frame_buf[hdr_size],
+                              sizeof(dip_bin_frame_buf) - hdr_size - sizeof(uint16_t));
+
+  if (iq_written != iq_size) {
+    LOG_WRN("DIP binary: IQ pack mismatch (expect %u got %u)", (unsigned)iq_size,
+            (unsigned)iq_written);
+    return;
+  }
+
+  const uint16_t crc = dip_crc16_ccitt(dip_bin_frame_buf, hdr_size + iq_written);
+
+  sys_put_le16(crc, &dip_bin_frame_buf[hdr_size + iq_written]);
+  dip_uart_send_bytes(dip_bin_frame_buf, frame_len);
+}
+
+#endif /* DIP_REPORT_BINARY_OUTPUT */
+
 /**
  * 分块打印本地 IQ（每行最多 8 个信道，与 print_report_basic 的窗口划分一致）；
  * 每点格式 ch(i,q)，无 remote。某 8 信道窗口内若没有任何有效测量则整行跳过。
@@ -684,7 +987,15 @@ static void dip_parse_local_iq_from_subevent(const struct bt_conn_le_cs_subevent
 
   bt_le_cs_step_data_parse(&buf, dip_local_step_iq_cb, &dip_parse_work_ctx);
 
-#if DIP_REPORT_LOG_VERBOSE
+  /*
+   * 报告输出三选一（互斥）：
+   *   BINARY — UART 原始帧，带宽最小，适合 PC 脚本采集；
+   *   VERBOSE — LOG_INF 多信道文本，便于人工对照；
+   *   否则 — 仅一行 pc，减轻日志对实时性的影响。
+   */
+#if DIP_REPORT_BINARY_OUTPUT
+  dip_send_local_report_binary(&dip_parse_work_ctx);
+#elif DIP_REPORT_LOG_VERBOSE
   dip_print_local_report_multichannel(&dip_parse_work_ctx);
 #else
   /* 仅证明收到并完成解析，不刷屏；若需多信道 IQ，将 DIP_REPORT_LOG_VERBOSE 置 1 */
