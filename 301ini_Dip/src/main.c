@@ -31,7 +31,6 @@
 /* 以下头文件供 DIP_REPORT_BINARY_OUTPUT：设备绑定、uart_poll_out、LE 编解码、错误码 */
 #include <errno.h>
 #include <zephyr/device.h>
-#include <zephyr/drivers/uart.h>
 #include <zephyr/kernel.h>
 #include <zephyr/sys/byteorder.h>
 #include <zephyr/sys/reboot.h>
@@ -43,6 +42,7 @@
 #include <zephyr/logging/log.h>
 
 #include "cs_de_data_parse.h"
+#include "cs_uart_binary.h"
 #include "flash/flash_ops.h"
 #include "interface/button_led.h"
 
@@ -130,6 +130,14 @@ static const uint32_t TEST_RANGING_COUNT = 25; // 测试测距次数
  */
 #ifndef DIP_BINARY_USE_THREAD
 #define DIP_BINARY_USE_THREAD 1
+#endif
+
+/*
+ * DIP 与全功能 CS 二进制 UART 共用发送线程（cs_uart_binary.c）。
+ * 须与 DIP_BINARY_USE_THREAD / CS_BINARY_USE_THREAD 保持一致。
+ */
+#ifndef CS_UART_BIN_USE_THREAD
+#define CS_UART_BIN_USE_THREAD DIP_BINARY_USE_THREAD
 #endif
 
 #define CON_STATUS_LED DK_LED1
@@ -406,9 +414,12 @@ static void ranging_data_get_complete_cb(struct bt_conn *conn,
     cs_data_index++; // 无论写入模式如何，都递增编号确保连续性
 
 #if ENABLE_DIRECT_PRINT
+#if CS_REPORT_BINARY_OUTPUT
+    cs_output_store_report_binary(&temp_flash_data, ranging_counter);
+#else
     // 直接打印模式 - 测距完成后直接打印到串口，不写入flash
-    // 相当于直接调用button2的打印输出功能
     print_store_cs_de_report_basic(&temp_flash_data, 80);
+#endif
 #elif FLASH_WRITE_MODE == FLASH_WRITE_MODE_SINGLE
     // 单个写入模式 - 使用k_work异步写入flash
     // LOG_DBG("Using single write mode with k_work");
@@ -536,196 +547,30 @@ static struct dip_step_parse_ctx dip_parse_work_ctx;
 #if DIP_REPORT_BINARY_OUTPUT
 
 /* =============================================================================
- * DIP 二进制 UART 输出（协议 v2：single AP + channel bitmap + int16 IQ）
+ * DIP 二进制 UART 输出（协议 v2，type=0x01，仅本地 IQ）
  *
- * 设计目标：在保留 dip_local_step_iq_cb / ctx->ch[ap][ch] 解析结果的前提下，
- * 用紧凑定长头 + 位图描述有效 fft 信道，再顺序附带 IQ，便于 PC 端高速解析。
+ * 数据源：dip_parse_local_iq_from_subevent 填充的 dip_step_parse_ctx（ctx->ch[ap][ch]）。
+ * 组帧后调用 cs_uart_bin_enqueue_frame()，由 cs_uart_binary.c 的 cs_uart_tx 线程发送。
  *
- * 线上字节序：除单字节字段外均为 little-endian（与 ARM / x86 PC 一致）。
+ * 与 cs_de_data_parse.c 中 type=0x02 路径的区别：
+ *   - 本段在 main.c：数据来自 HCI 直采，不经 cs_de_populate_report；
+ *   - 每信道 4 字节（i,q）；有效格点由 ctx->ch[][].valid 决定。
  *
- * 完整帧布局（按发送顺序）：
- *   [固定同步/类型 4B]
- *     sync1=0x55, sync2=0xAA, version=0x01, type=0x01(DIP IQ)
- *   [payload_len 2B LE]
- *     从 procedure_counter 起至 IQ 区末尾的字节数（不含 sync..type、payload_len 自身、CRC）
- *   [元数据 + 位图 16B]
- *     procedure_counter(2), ap(1), iq_format(1), channel_count(1), reserved(1),
- *     channel_bitmap[10]
- *   [IQ 变长 4*channel_count B]
- *     按 fft ch 升序，仅对 bitmap 对应位为 1 的信道各写 int16 i、int16 q
- *   [crc16 2B LE]
- *     CRC16-CCITT(0x1021)，初值 0xFFFF，覆盖从 sync1 到 IQ 区最后一字节
- *
- * 位图编码：channel_bitmap[k] 的 bit (ch%8) 表示 fft 下标 ch 是否有效；
- *   ch 与 dip_parse 中 ctx->ch[ap][ch]、HCI 信道关系：ch = hci_ch - DIP_CS_CHANNEL_INDEX_OFFSET。
- *   共 DIP_MAX_FFT_CHANNELS(75) 格点，需 ceil(75/8)=10 字节，最高 5 bit 保留未用。
- *
- * 当前限制：优先 n_ap=1；若 n_ap>1 仅发 ap=0 并 LOG_WRN，不拆多帧。
- *
- * --- 发送架构（DIP_BINARY_USE_THREAD，默认，已板级验证）---
- *   Producer：subevent_result_dip_cb → dip_parse_local_iq_from_subevent
- *            → dip_output_local_report_binary → dip_enqueue_local_report_binary
- *            → dip_bin_build_frame（写入 dip_bin_msg_scratch）
- *            → k_msgq_put(K_NO_WAIT)；满则 LOG_WRN 丢帧，不阻塞 BT RX WQ
- *   Consumer：dip_uart_tx 线程 → k_msgq_get(K_FOREVER) → dip_uart_send_bytes
- *   设计参考：快速二进制输出 2.0.md 阶段 2（msgq + 独立线程）；帧格式为 v2 bitmap 而非 sample-list。
- *
- * --- 阻塞回退（DIP_BINARY_USE_THREAD=0）---
- *   同上 Producer 直至 dip_bin_build_frame，随后在回调线程内直接 dip_uart_send_bytes。
- *
- * --- 固件函数一览 ---
- *   dip_bin_fill_channel_bitmap / dip_bin_pack_iq_payload — 位图与 IQ 载荷
- *   dip_bin_build_frame          — 组帧 + CRC（两路径共用）
- *   dip_crc16_ccitt              — PC 端须使用相同算法与覆盖范围
- *   dip_uart_send_bytes          — uart_poll_out 逐字节（消费者线程或阻塞路径）
- *
- * 内存：dip_bin_frame_buf、dip_bin_msg_scratch、msgq 消息均放 BSS/static，
- *       禁止在 BT RX WQ 栈上分配 dip_bin_msg（约 402B）或大帧数组。
+ * 协议文档：doc/DIP_binary_protocol.md
+ * 架构说明：doc/firmware_uart_binary_architecture.md
  * ============================================================================= */
 
-#if DIP_BINARY_USE_THREAD
-/** 待发帧队列深度：可缓存 8 条完整帧；突发超过 8 条/消费速度则触发 drop */
-#define DIP_BIN_MSGQ_DEPTH 8U
-/** 发送线程栈：含 dip_bin_msg 局部副本（约 400B）+ 调用链余量 */
-#define DIP_UART_TX_THREAD_STACK_SIZE 1024
-/**
- * 发送线程优先级（数值越小越高，具体语义依 Zephyr 配置）。
- * 低于 BT 栈线程，避免 UART 发送长期抢占蓝牙；高于 idle 以保证及时 drain 队列。
- */
-#define DIP_UART_TX_THREAD_PRIORITY 7
-#endif
-
-/** 帧同步字节 1，用于 PC 端串口流中定位帧起点 */
-#define DIP_BIN_SYNC1 0x55U
-/** 帧同步字节 2，与 sync1 组合降低误同步概率 */
-#define DIP_BIN_SYNC2 0xAAU
-/** 协议版本号；字段含义变更时递增，PC 端据此分支解析 */
-#define DIP_BIN_VERSION 0x01U
-/** 帧类型：0x01 表示本条为 DIP 本地 IQ 报告（后续可扩展其它 type） */
-#define DIP_BIN_TYPE_IQ 0x01U
-/** iq_format 字段：0 表示 IQ 载荷为 int16 有符号、小端 */
-#define DIP_BIN_IQ_FORMAT_INT16 0U
-/** 信道位图字节数：覆盖 75 个 fft 信道需 10 字节（80 bit，高 5 bit 未使用） */
-#define DIP_BIN_CHANNEL_BITMAP_BYTES 10U
-/**
- * 单帧最大长度上界：头(22) + 全信道 IQ(75*4=300) + CRC(2) ≈ 324，取 400 留余量。
- * 须 ≥ sizeof(dip_bin_header) + DIP_MAX_FFT_CHANNELS*4 + 2。
- */
-#define DIP_BIN_MAX_FRAME_SIZE 400U
+/** 组帧静态缓冲；BT RX WQ 内 subevent 串行，禁止在栈上分配大数组 */
+static uint8_t dip_bin_frame_buf[CS_UART_BIN_MAX_FRAME_SIZE];
 
 /**
- * 二进制帧固定头（packed，无编译器填充）。
- * 其后紧接变长 IQ 区，再跟 2 字节 CRC；IQ 区不嵌入本结构体。
- */
-struct __packed dip_bin_header {
-  uint8_t sync1;
-  uint8_t sync2;
-  uint8_t version;
-  uint8_t type;
-  /** 载荷长度：procedure_counter(2) + ap..reserved(4) + bitmap(10) + IQ 字节数 */
-  uint16_t payload_len;
-  /** 与 dip_step_parse_ctx::procedure_counter 一致，标识所属 CS procedure */
-  uint16_t procedure_counter;
-  /** 天线路径索引；当前实现固定发 0（单 AP 场景） */
-  uint8_t ap;
-  /** IQ 数值格式，见 DIP_BIN_IQ_FORMAT_INT16 */
-  uint8_t iq_format;
-  /** 本帧有效 fft 信道数，等于 channel_bitmap 中置 1 的位数 */
-  uint8_t channel_count;
-  /** 保留，填 0，供后续扩展（如缩放因子、质量标志等） */
-  uint8_t reserved;
-  /** 位图：bit ch 为 1 表示该 fft 信道在 IQ 区中占一对 (i,q) */
-  uint8_t channel_bitmap[DIP_BIN_CHANNEL_BITMAP_BYTES];
-};
-
-/** 与 Zephyr console 共用 UART，二进制与 LOG_* 可能混流，测试时请控制日志量 */
-static const struct device *dip_uart = DEVICE_DT_GET(DT_CHOSEN(zephyr_console));
-/** 整帧组装缓冲；静态分配，供 dip_bin_build_frame() / 阻塞发送路径复用 */
-static uint8_t dip_bin_frame_buf[DIP_BIN_MAX_FRAME_SIZE];
-
-#if DIP_BINARY_USE_THREAD
-/** 入队消息：已打包好的完整帧，发送线程只负责 uart_poll_out */
-struct dip_bin_msg {
-  uint16_t len;
-  uint8_t data[DIP_BIN_MAX_FRAME_SIZE];
-};
-
-/** 深度 DIP_BIN_MSGQ_DEPTH；每条消息 sizeof(dip_bin_msg)；4 字节对齐满足 ARM */
-K_MSGQ_DEFINE(dip_bin_msgq, sizeof(struct dip_bin_msg), DIP_BIN_MSGQ_DEPTH, 4);
-K_THREAD_STACK_DEFINE(dip_uart_tx_stack, DIP_UART_TX_THREAD_STACK_SIZE);
-static struct k_thread dip_uart_tx_thread_data;
-/**
- * Producer 侧打包缓冲区（单连接 subevent 串行，可安全复用）。
- * k_msgq_put 会把本结构体 **拷贝** 进队列，故入队后 scratch 可立即用于下一帧。
- */
-static struct dip_bin_msg dip_bin_msg_scratch;
-#endif /* DIP_BINARY_USE_THREAD */
-
-/**
- * 经 UART 逐字节阻塞发送。
- * 线程版在 dip_uart_tx 中调用；阻塞版在 BT RX WQ 中调用。
- * uart_poll_out 会等待 TX 寄存器空，属阻塞语义，但已移出蓝牙回调（线程版）。
- * @param data 待发送缓冲区首地址
- * @param len  字节数；为 0 或设备未就绪时直接返回
- */
-static void dip_uart_send_bytes(const uint8_t *data, size_t len)
-{
-  if (data == NULL || len == 0U) {
-    return;
-  }
-
-  if (!device_is_ready(dip_uart)) {
-    return;
-  }
-
-  for (size_t i = 0; i < len; i++) {
-    uart_poll_out(dip_uart, data[i]);
-  }
-}
-
-/**
- * CRC16-CCITT（多项式 0x1021，初值 0xFFFF）。
- * PC 端校验范围须与本函数一致：从帧首 sync1 到 IQ 区最后一字节（不含 CRC 域）。
- *
- * @param data 参与校验的数据
- * @param len  字节长度
- * @return 16 位 CRC，由调用方 sys_put_le16 写入帧尾
- */
-static uint16_t dip_crc16_ccitt(const uint8_t *data, size_t len)
-{
-  uint16_t crc = 0xFFFFU;
-
-  if (data == NULL) {
-    return crc;
-  }
-
-  for (size_t i = 0; i < len; i++) {
-    crc ^= (uint16_t)data[i] << 8;
-    for (int bit = 0; bit < 8; bit++) {
-      if ((crc & 0x8000U) != 0U) {
-        crc = (uint16_t)((crc << 1) ^ 0x1021U);
-      } else {
-        crc <<= 1;
-      }
-    }
-  }
-
-  return crc;
-}
-
-/**
- * 根据 ctx->ch[ap][ch].valid 填充信道位图并统计有效信道数。
- * 数据来源与 dip_local_step_iq_cb 写入的格点一致，不二次解析 HCI。
- *
- * @param ctx           已完成 bt_le_cs_step_data_parse 的解析上下文
- * @param ap            天线路径索引（当前调用方固定传 0）
- * @param bitmap        输出至少 DIP_BIN_CHANNEL_BITMAP_BYTES 字节，调用前内容可被覆盖
- * @param channel_count 输出置 1 的位数，与后续 IQ 区样本对数一致
+ * @brief 根据 ctx->ch[ap][ch].valid 填充信道位图
+ * @param channel_count 输出置 1 的位数，与 IQ 区 int16 对数一致
  */
 static void dip_bin_fill_channel_bitmap(const struct dip_step_parse_ctx *ctx, uint8_t ap,
                                         uint8_t *bitmap, uint8_t *channel_count)
 {
-  memset(bitmap, 0, DIP_BIN_CHANNEL_BITMAP_BYTES);
+  memset(bitmap, 0, CS_UART_BIN_CHANNEL_BITMAP_BYTES);
 
   if (ctx == NULL || bitmap == NULL || channel_count == NULL) {
     if (channel_count != NULL) {
@@ -741,7 +586,6 @@ static void dip_bin_fill_channel_bitmap(const struct dip_step_parse_ctx *ctx, ui
       continue;
     }
 
-    /* 小端位序：ch 0 对应 bitmap[0] 的 bit0，ch 7 对应 bit7，ch 8 对应 bitmap[1] 的 bit0 */
     bitmap[ch / 8U] |= (uint8_t)(1U << (ch % 8U));
     count++;
   }
@@ -750,15 +594,8 @@ static void dip_bin_fill_channel_bitmap(const struct dip_step_parse_ctx *ctx, ui
 }
 
 /**
- * 将有效信道的 i/q 顺序写入 IQ 载荷区（int16 little-endian）。
- * 遍历顺序必须与位图生成时一致：ch 从 0 递增，仅处理 bitmap 中已置位的信道。
- *
- * @param ctx     解析上下文
- * @param ap      天线路径
- * @param bitmap  由 dip_bin_fill_channel_bitmap() 生成
- * @param out     写入起点（通常为 dip_bin_frame_buf + sizeof(dip_bin_header)）
- * @param out_max 允许写入的最大字节数（预留 CRC 空间由调用方扣除）
- * @return 实际写入字节数，正常应为 channel_count * 4
+ * @brief 将有效信道的 int16 i/q 顺序写入 IQ 载荷（每信道 4 字节，LE）
+ * @return 写入字节数；ch 遍历顺序须与 dip_bin_fill_channel_bitmap 一致
  */
 static size_t dip_bin_pack_iq_payload(const struct dip_step_parse_ctx *ctx, uint8_t ap,
                                       const uint8_t *bitmap, uint8_t *out, size_t out_max)
@@ -778,7 +615,6 @@ static size_t dip_bin_pack_iq_payload(const struct dip_step_parse_ctx *ctx, uint
       break;
     }
 
-    /* 强制转为 uint16_t 再写入，保留 int16 负值的位模式 */
     sys_put_le16((uint16_t)ctx->ch[ap][ch].i, &out[offset]);
     offset += sizeof(int16_t);
     sys_put_le16((uint16_t)ctx->ch[ap][ch].q, &out[offset]);
@@ -789,19 +625,9 @@ static size_t dip_bin_pack_iq_payload(const struct dip_step_parse_ctx *ctx, uint
 }
 
 /**
- * 将 ctx 打包为完整二进制帧写入 frame（线程版与阻塞版共用）。
- *
- * 组帧顺序：
- *   1. 从 ctx->ch[ap][ch].valid 生成 bitmap 与 channel_count
- *   2. 填写 dip_bin_header（含 payload_len，先按 iq_size 计算）
- *   3. 在 frame[hdr_size..] 写入 IQ 载荷
- *   4. 对 [0 .. hdr_size+iq_size) 计算 CRC 并写入帧尾
- *
- * @param ctx       已完成 step_data 解析的上下文
- * @param frame     输出缓冲区
- * @param frame_cap frame 容量（字节）
- * @param out_len   成功时输出整帧长度（含 CRC）
- * @return 0 成功；-EINVAL 参数无效；-ENOSPC 帧超长；-EIO IQ 打包长度不一致
+ * @brief 将 dip_step_parse_ctx 打包为完整 type=0x01 二进制帧（含 CRC）
+ * @param out_len 成功时整帧长度（含 CRC 两字节）
+ * @return 0 成功；-EINVAL / -ENOSPC / -EIO
  */
 static int dip_bin_build_frame(const struct dip_step_parse_ctx *ctx, uint8_t *frame,
                                size_t frame_cap, uint16_t *out_len)
@@ -810,7 +636,6 @@ static int dip_bin_build_frame(const struct dip_step_parse_ctx *ctx, uint8_t *fr
     return -EINVAL;
   }
 
-  /* 协议 v2 按单 AP 发帧；多 AP 时只导出 ap=0 的数据 */
   uint8_t ap = 0U;
 
   if (ctx->n_ap != 1U) {
@@ -818,11 +643,11 @@ static int dip_bin_build_frame(const struct dip_step_parse_ctx *ctx, uint8_t *fr
   }
 
   uint8_t channel_count = 0U;
-  uint8_t bitmap[DIP_BIN_CHANNEL_BITMAP_BYTES];
+  uint8_t bitmap[CS_UART_BIN_CHANNEL_BITMAP_BYTES];
 
   dip_bin_fill_channel_bitmap(ctx, ap, bitmap, &channel_count);
 
-  const size_t hdr_size = sizeof(struct dip_bin_header);
+  const size_t hdr_size = sizeof(struct cs_uart_bin_header);
   const size_t iq_size = (size_t)channel_count * 2U * sizeof(int16_t);
   const size_t frame_len = hdr_size + iq_size + sizeof(uint16_t);
 
@@ -831,28 +656,26 @@ static int dip_bin_build_frame(const struct dip_step_parse_ctx *ctx, uint8_t *fr
     return -ENOSPC;
   }
 
-  struct dip_bin_header *hdr = (struct dip_bin_header *)frame;
+  struct cs_uart_bin_header *hdr = (struct cs_uart_bin_header *)frame;
 
-  /* --- 固定头与位图（22 字节）--- */
-  hdr->sync1 = DIP_BIN_SYNC1;
-  hdr->sync2 = DIP_BIN_SYNC2;
-  hdr->version = DIP_BIN_VERSION;
-  hdr->type = DIP_BIN_TYPE_IQ;
+  hdr->sync1 = CS_UART_BIN_SYNC1;
+  hdr->sync2 = CS_UART_BIN_SYNC2;
+  hdr->version = CS_UART_BIN_VERSION;
+  hdr->type = CS_UART_BIN_TYPE_DIP_LOCAL_IQ;
   hdr->procedure_counter = sys_cpu_to_le16(ctx->procedure_counter);
   hdr->ap = ap;
-  hdr->iq_format = DIP_BIN_IQ_FORMAT_INT16;
+  hdr->iq_format = CS_UART_BIN_IQ_FORMAT_INT16;
   hdr->channel_count = channel_count;
   hdr->reserved = 0U;
-  memcpy(hdr->channel_bitmap, bitmap, DIP_BIN_CHANNEL_BITMAP_BYTES);
+  memcpy(hdr->channel_bitmap, bitmap, CS_UART_BIN_CHANNEL_BITMAP_BYTES);
 
   const uint16_t payload_len =
       (uint16_t)(sizeof(hdr->procedure_counter) + sizeof(hdr->ap) + sizeof(hdr->iq_format) +
                  sizeof(hdr->channel_count) + sizeof(hdr->reserved) +
-                 DIP_BIN_CHANNEL_BITMAP_BYTES + iq_size);
+                 CS_UART_BIN_CHANNEL_BITMAP_BYTES + iq_size);
 
   hdr->payload_len = sys_cpu_to_le16(payload_len);
 
-  /* --- 变长 IQ 区（4 * channel_count 字节）--- */
   const size_t iq_written = dip_bin_pack_iq_payload(
       ctx, ap, bitmap, &frame[hdr_size], frame_cap - hdr_size - sizeof(uint16_t));
 
@@ -862,8 +685,7 @@ static int dip_bin_build_frame(const struct dip_step_parse_ctx *ctx, uint8_t *fr
     return -EIO;
   }
 
-  /* --- CRC：覆盖 sync1 起至 IQ 末字节；PC 端校验须一致 --- */
-  const uint16_t crc = dip_crc16_ccitt(frame, hdr_size + iq_written);
+  const uint16_t crc = cs_uart_bin_crc16_ccitt(frame, hdr_size + iq_written);
 
   sys_put_le16(crc, &frame[hdr_size + iq_written]);
   *out_len = (uint16_t)frame_len;
@@ -871,82 +693,28 @@ static int dip_bin_build_frame(const struct dip_step_parse_ctx *ctx, uint8_t *fr
   return 0;
 }
 
-#if DIP_BINARY_USE_THREAD
-
 /**
- * DIP 二进制 UART 发送消费者线程（线程名 dip_uart_tx）。
+ * @brief DIP 二进制报告统一入口（dip_parse_local_iq_from_subevent 解析完成后调用）
  *
- * 生命周期：main() 中 k_thread_create 启动后永久运行。
- * 职责：仅负责从 dip_bin_msgq 取帧并 dip_uart_send_bytes，不理解协议内容。
- * 栈上 dip_bin_msg 为 k_msgq_get 的接收副本，与队列内存储独立。
+ * 运行于 BT RX WQ：仅组帧 + 非阻塞入队；队列满时 LOG_WRN 丢帧。
  */
-static void dip_uart_tx_thread(void *p1, void *p2, void *p3)
-{
-  ARG_UNUSED(p1);
-  ARG_UNUSED(p2);
-  ARG_UNUSED(p3);
-
-  struct dip_bin_msg msg;
-
-  while (true) {
-    if (k_msgq_get(&dip_bin_msgq, &msg, K_FOREVER) == 0) {
-      dip_uart_send_bytes(msg.data, msg.len);
-    }
-  }
-}
-
-/**
- * 非阻塞上报路径（Producer，运行于 BT RX WQ）。
- *
- * 约束：禁止 k_msgq_put(..., K_FOREVER)，避免串口慢导致蓝牙回调饿死。
- * 失败策略：打包失败静默返回；队列满则丢弃当前帧并 LOG_WRN（含 pc 便于统计丢包率）。
- */
-static void dip_enqueue_local_report_binary(const struct dip_step_parse_ctx *ctx)
+static void dip_output_local_report_binary(const struct dip_step_parse_ctx *ctx)
 {
   if (ctx == NULL) {
     return;
   }
 
-  if (dip_bin_build_frame(ctx, dip_bin_msg_scratch.data, sizeof(dip_bin_msg_scratch.data),
-                          &dip_bin_msg_scratch.len) != 0) {
+  uint16_t len = 0U;
+
+  if (dip_bin_build_frame(ctx, dip_bin_frame_buf, sizeof(dip_bin_frame_buf), &len) != 0) {
     return;
   }
 
-  const int err = k_msgq_put(&dip_bin_msgq, &dip_bin_msg_scratch, K_NO_WAIT);
+  const int err = cs_uart_bin_enqueue_frame(dip_bin_frame_buf, len);
 
-  if (err != 0) {
+  if (err == -ENOMEM) {
     LOG_WRN("DIP binary msgq full, drop pc=%u", ctx->procedure_counter);
   }
-}
-
-#else /* !DIP_BINARY_USE_THREAD */
-
-/**
- * 阻塞上报路径：组帧与 UART 发送均在 subevent/BT RX WQ 内完成。
- * 用于对比 abort 率或快速验证协议；生产采集建议 DIP_BINARY_USE_THREAD=1。
- */
-static void dip_send_local_report_binary(const struct dip_step_parse_ctx *ctx)
-{
-  uint16_t len = 0U;
-
-  if (dip_bin_build_frame(ctx, dip_bin_frame_buf, sizeof(dip_bin_frame_buf), &len) == 0) {
-    dip_uart_send_bytes(dip_bin_frame_buf, len);
-  }
-}
-
-#endif /* DIP_BINARY_USE_THREAD */
-
-/**
- * DIP 二进制报告统一入口（dip_parse_local_iq_from_subevent 在解析后调用）。
- * 根据 DIP_BINARY_USE_THREAD 分派到入队或阻塞发送，上层无需关心 UART 细节。
- */
-static void dip_output_local_report_binary(const struct dip_step_parse_ctx *ctx)
-{
-#if DIP_BINARY_USE_THREAD
-  dip_enqueue_local_report_binary(ctx);
-#else
-  dip_send_local_report_binary(ctx);
-#endif
 }
 
 #endif /* DIP_REPORT_BINARY_OUTPUT */
@@ -1829,16 +1597,9 @@ int main(void) {
 
   LOG_INF("Starting Channel Sounding Initiator Sample");
 
-#if DIP_REPORT_BINARY_OUTPUT && DIP_BINARY_USE_THREAD
-  /*
-   * 在 bt_enable 之前启动发送线程：仅依赖 UART 设备，与蓝牙栈无耦合。
-   * 线程启动后即阻塞在 k_msgq_get，待首次 subevent 解析入队后才开始发字节。
-   */
-  k_thread_create(&dip_uart_tx_thread_data, dip_uart_tx_stack,
-                  K_THREAD_STACK_SIZEOF(dip_uart_tx_stack), dip_uart_tx_thread, NULL, NULL, NULL,
-                  DIP_UART_TX_THREAD_PRIORITY, 0, K_NO_WAIT);
-  k_thread_name_set(&dip_uart_tx_thread_data, "dip_uart_tx");
-  LOG_INF("DIP binary UART TX thread started (msgq depth %u)", (unsigned)DIP_BIN_MSGQ_DEPTH);
+#if (DIP_REPORT_BINARY_OUTPUT || (!APP_CS_DIP_BYPASS_RAS && CS_REPORT_BINARY_OUTPUT)) && \
+    CS_UART_BIN_USE_THREAD
+  cs_uart_bin_tx_thread_start();
 #endif
 
   dk_leds_init();

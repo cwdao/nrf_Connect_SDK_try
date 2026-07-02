@@ -1,6 +1,6 @@
 # DIP 二进制 UART 帧协议（v2）
 
-本文档描述固件在 `DIP_REPORT_BINARY_OUTPUT=1` 时，经 **console UART** 输出的 **DIP 本地 IQ 二进制帧**格式。实现见 `src/main.c` 中 `dip_bin_*` 与 `dip_output_local_report_binary()`。
+固件实现：`dip_bin_*` 与 `dip_output_local_report_binary()`（`src/main.c`）；CRC/线程见 `src/cs_uart_binary.c`。
 
 **状态**：已在 nRF54L15 DK 上完成端到端验证（固件组帧 + PC 脚本 `dip_parse_uart.py` 解析/CRC 通过）。
 
@@ -15,6 +15,8 @@
 | 字节序 | 多字节字段均为 **little-endian** |
 | 单 AP | 当前优先 `n_ap=1`；若 `n_ap>1` 仅发 `ap=0` 并打 `LOG_WRN` |
 | 发送方式 | `DIP_BINARY_USE_THREAD=1`（默认）：回调内打包入 `k_msgq`，独立线程 `uart_poll_out`；`=0`：回调内直接发送 |
+
+UART 发送线程与全功能 CS 二进制输出共用，实现见 `src/cs_uart_binary.c`（线程名 `cs_uart_tx`）。
 
 ---
 
@@ -119,9 +121,9 @@ subevent_result_dip_cb (BT RX WQ)
   → dip_bin_build_frame → dip_bin_msg_scratch
   → k_msgq_put(..., K_NO_WAIT)   // 满则 LOG_WRN 丢帧，不阻塞
 
-dip_uart_tx 线程（main 中 k_thread_create，名 dip_uart_tx）
+cs_uart_tx 线程（main 中 cs_uart_bin_tx_thread_start，名 cs_uart_tx）
   → k_msgq_get(..., K_FOREVER)
-  → dip_uart_send_bytes → uart_poll_out
+  → cs_uart_bin_send_bytes → uart_poll_out
 ```
 
 | 参数 | 值 | 说明 |
@@ -129,7 +131,7 @@ dip_uart_tx 线程（main 中 k_thread_create，名 dip_uart_tx）
 | 消息结构 | `struct dip_bin_msg` | `uint16_t len` + `uint8_t data[400]` |
 | 队列 | `dip_bin_msgq` | `K_MSGQ_DEFINE(..., 8, 4)` |
 | 打包缓冲 | `dip_bin_msg_scratch` | 静态 BSS，避免 BT RX WQ 栈上 ~402B |
-| 线程栈 | 1024 B | `dip_uart_tx_stack` |
+| 线程栈 | 1024 B | `cs_uart_bin_tx_stack` |
 | 线程优先级 | 7 | 低于 BT、高于 idle（依 Zephyr 配置） |
 | 阻塞回退 | `DIP_BINARY_USE_THREAD=0` | 回调内 `dip_send_local_report_binary` |
 
@@ -141,8 +143,8 @@ dip_uart_tx 线程（main 中 k_thread_create，名 dip_uart_tx）
 | `dip_bin_pack_iq_payload` | 按 ch 升序写 int16 i,q |
 | `dip_bin_build_frame` | 组帧 + CRC（两路径共用） |
 | `dip_crc16_ccitt` | CRC16-CCITT，初值 0xFFFF |
-| `dip_enqueue_local_report_binary` | Producer：打包入队 |
-| `dip_uart_tx_thread` | Consumer：出队发 UART |
+| `cs_uart_bin_enqueue_frame` | Producer：打包入队（DIP/CS 共用） |
+| `cs_uart_bin_tx_thread` | Consumer：出队发 UART（`cs_uart_binary.c`） |
 | `dip_output_local_report_binary` | 解析完成后的统一入口 |
 
 ### 7.2 丢帧与调优
