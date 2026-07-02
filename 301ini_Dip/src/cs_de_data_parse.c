@@ -255,6 +255,7 @@ void print_report_fast(const cs_de_report_t *r, int max_output_channels) {
  *   - type = CS_UART_BIN_TYPE_CS_DUAL_IQ (0x02)
  *   - 每有效信道 8 字节：i_local, q_local, i_remote, q_remote（各 int16 LE）
  *   - procedure_counter 填入 RAS ranging_counter
+ *   - timestamp_ms 填入 store_cs_de_report_t::timestamp_ms（k_uptime_get 毫秒）
  *
  * 有效信道：cs_de_populate_report 后 iq_tones 任一分量非零的 fft 格点（0..74）。
  * 发送：cs_uart_bin_enqueue_frame() → cs_uart_tx 线程（见 cs_uart_binary.c）。
@@ -365,7 +366,8 @@ static size_t cs_bin_pack_dual_iq_payload(const cs_de_report_t *report, uint8_t 
  * @return 0 成功；-EINVAL / -ENOSPC / -EIO 见实现内 LOG_WRN
  */
 static int cs_bin_build_dual_iq_frame(const cs_de_report_t *report, uint16_t ranging_counter,
-                                      uint8_t *frame, size_t frame_cap, uint16_t *out_len)
+                                      uint64_t timestamp_ms, uint8_t *frame, size_t frame_cap,
+                                      uint16_t *out_len)
 {
   if (report == NULL || frame == NULL || out_len == NULL) {
     return -EINVAL;
@@ -398,6 +400,7 @@ static int cs_bin_build_dual_iq_frame(const cs_de_report_t *report, uint16_t ran
   hdr->version = CS_UART_BIN_VERSION;
   hdr->type = CS_UART_BIN_TYPE_CS_DUAL_IQ;
   hdr->procedure_counter = sys_cpu_to_le16(ranging_counter);
+  hdr->timestamp_ms = sys_cpu_to_le64(timestamp_ms);
   hdr->ap = ap;
   hdr->iq_format = CS_UART_BIN_IQ_FORMAT_INT16;
   hdr->channel_count = channel_count;
@@ -405,8 +408,8 @@ static int cs_bin_build_dual_iq_frame(const cs_de_report_t *report, uint16_t ran
   memcpy(hdr->channel_bitmap, bitmap, CS_UART_BIN_CHANNEL_BITMAP_BYTES);
 
   const uint16_t payload_len =
-      (uint16_t)(sizeof(hdr->procedure_counter) + sizeof(hdr->ap) + sizeof(hdr->iq_format) +
-                 sizeof(hdr->channel_count) + sizeof(hdr->reserved) +
+      (uint16_t)(sizeof(hdr->procedure_counter) + sizeof(hdr->timestamp_ms) + sizeof(hdr->ap) +
+                 sizeof(hdr->iq_format) + sizeof(hdr->channel_count) + sizeof(hdr->reserved) +
                  CS_UART_BIN_CHANNEL_BITMAP_BYTES + iq_size);
 
   hdr->payload_len = sys_cpu_to_le16(payload_len);
@@ -440,8 +443,9 @@ void cs_output_store_report_binary(const store_cs_de_report_t *store, uint16_t r
   }
 
   uint16_t frame_len = 0U;
-  const int err = cs_bin_build_dual_iq_frame(&store->report, ranging_counter, cs_bin_frame_buf,
-                                             sizeof(cs_bin_frame_buf), &frame_len);
+  const int err = cs_bin_build_dual_iq_frame(&store->report, ranging_counter, store->timestamp_ms,
+                                             cs_bin_frame_buf, sizeof(cs_bin_frame_buf),
+                                             &frame_len);
 
   if (err != 0) {
     LOG_WRN("CS binary build failed rc=%d rcounter=%u", err, ranging_counter);

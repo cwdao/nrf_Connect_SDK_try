@@ -6,6 +6,8 @@ CS / DIP binary UART frame parser (shared header, type-dependent IQ payload).
 type 0x01 — DIP local IQ:  int16 i, int16 q per channel (4 B)
 type 0x02 — CS dual IQ:     int16 i_local, q_local, i_remote, q_remote (8 B)
 
+Header v0x02 adds uint64 timestamp_ms (k_uptime_get ms) after procedure_counter.
+
 See doc/DIP_binary_protocol.md and doc/CS_binary_protocol.md.
 """
 
@@ -24,11 +26,21 @@ except ImportError:
 
 SYNC1 = 0x55
 SYNC2 = 0xAA
-HEADER_SIZE = 22
+HEADER_SIZE_V1 = 22
+HEADER_SIZE_V2 = 30
+PAYLOAD_FIXED_V1 = 16
+PAYLOAD_FIXED_V2 = 24
 MAX_FFT_CHANNELS = 75
 
 TYPE_DIP_LOCAL = 0x01
 TYPE_CS_DUAL = 0x02
+
+
+def header_layout(version: int) -> Tuple[int, int, int, int]:
+    """Return (header_size, payload_fixed, ap_offset, bitmap_offset)."""
+    if version == 0x01:
+        return HEADER_SIZE_V1, PAYLOAD_FIXED_V1, 8, 12
+    return HEADER_SIZE_V2, PAYLOAD_FIXED_V2, 16, 20
 
 
 def crc16_ccitt(data: bytes) -> int:
@@ -60,31 +72,40 @@ def iq_bytes_per_channel(ftype: int) -> Optional[int]:
 
 
 def parse_frame(frame: bytes) -> Optional[Dict]:
-    if len(frame) < HEADER_SIZE + 2:
+    if len(frame) < HEADER_SIZE_V1 + 2:
         return None
 
     if frame[0] != SYNC1 or frame[1] != SYNC2:
         return None
 
     version, ftype = frame[2], frame[3]
+    hdr_size, payload_fixed, ap_off, bitmap_off = header_layout(version)
+
+    if len(frame) < hdr_size + 2:
+        return None
+
     payload_len, pc = struct.unpack_from("<HH", frame, 4)
-    ap, iq_format, ch_count, _reserved = struct.unpack_from("<BBBB", frame, 8)
-    bitmap = frame[12:22]
+    timestamp_ms: Optional[int] = None
+    if version >= 0x02:
+        timestamp_ms = struct.unpack_from("<Q", frame, 8)[0]
+
+    ap, iq_format, ch_count, _reserved = struct.unpack_from("<BBBB", frame, ap_off)
+    bitmap = frame[bitmap_off : bitmap_off + 10]
 
     bpc = iq_bytes_per_channel(ftype)
     if bpc is None:
         return None
 
-    iq_len = payload_len - 16
+    iq_len = payload_len - payload_fixed
     if iq_len < 0 or iq_len % bpc != 0:
         return None
 
-    expected = HEADER_SIZE + iq_len + 2
+    expected = hdr_size + iq_len + 2
     if len(frame) != expected:
         return None
 
-    body = frame[: HEADER_SIZE + iq_len]
-    crc_rx = struct.unpack_from("<H", frame, HEADER_SIZE + iq_len)[0]
+    body = frame[: hdr_size + iq_len]
+    crc_rx = struct.unpack_from("<H", frame, hdr_size + iq_len)[0]
     if crc16_ccitt(body) != crc_rx:
         return None
 
@@ -92,7 +113,7 @@ def parse_frame(frame: bytes) -> Optional[Dict]:
     if len(chs) != ch_count or ch_count * bpc != iq_len:
         return None
 
-    iq_bytes = frame[HEADER_SIZE : HEADER_SIZE + iq_len]
+    iq_bytes = frame[hdr_size : hdr_size + iq_len]
     iq_map: Dict[int, Union[Tuple[int, int], Tuple[int, int, int, int]]] = {}
     off = 0
     for ch in chs:
@@ -105,7 +126,7 @@ def parse_frame(frame: bytes) -> Optional[Dict]:
             off += 8
             iq_map[ch] = (il, ql, ir, qr)
 
-    return {
+    result: Dict = {
         "version": version,
         "type": ftype,
         "procedure_counter": pc,
@@ -116,6 +137,9 @@ def parse_frame(frame: bytes) -> Optional[Dict]:
         "iq": iq_map,
         "raw": frame,
     }
+    if timestamp_ms is not None:
+        result["timestamp_ms"] = timestamp_ms
+    return result
 
 
 class FrameReader:
@@ -142,20 +166,22 @@ class FrameReader:
             if len(self._buf) < 6:
                 break
 
+            version = self._buf[2]
             ftype = self._buf[3]
             bpc = iq_bytes_per_channel(ftype)
             if bpc is None:
                 del self._buf[0]
                 continue
 
+            hdr_size, payload_fixed, _, _ = header_layout(version)
             payload_len = struct.unpack_from("<H", self._buf, 4)[0]
-            iq_len = payload_len - 16
+            iq_len = payload_len - payload_fixed
             max_iq = MAX_FFT_CHANNELS * bpc
             if iq_len < 0 or iq_len > max_iq or iq_len % bpc != 0:
                 del self._buf[0]
                 continue
 
-            total = HEADER_SIZE + iq_len + 2
+            total = hdr_size + iq_len + 2
             if len(self._buf) < total:
                 break
 
@@ -183,13 +209,15 @@ def main() -> int:
     parser.add_argument("port", help="Serial port, e.g. COM3 or /dev/ttyACM0")
     parser.add_argument("--baud", type=int, default=115200)
     parser.add_argument("--dump-hex", action="store_true")
-    parser.add_argument("--csv", metavar="FILE", help="Append rows to CSV")
+    parser.add_argument(
+        "--csv", metavar="FILE", help="Append procedure_counter,timestamp_ms,... rows to CSV"
+    )
     args = parser.parse_args()
 
     reader = FrameReader()
     csv_file = open(args.csv, "a", encoding="utf-8") if args.csv else None
     if csv_file and csv_file.tell() == 0:
-        csv_file.write("procedure_counter,type,ch,i_local,q_local,i_remote,q_remote\n")
+        csv_file.write("procedure_counter,timestamp_ms,type,ch,i_local,q_local,i_remote,q_remote\n")
 
     with serial.Serial(args.port, args.baud, timeout=0.1) as ser:
         print(f"Listening on {args.port} @ {args.baud} … Ctrl+C to stop")
@@ -205,26 +233,27 @@ def main() -> int:
                         continue
                     n += 1
                     pc = info["procedure_counter"]
+                    ts = info.get("timestamp_ms", "")
                     ftype = info["type"]
                     chs = info["channels"]
                     tname = type_name(ftype)
                     if chs:
                         print(
-                            f"[{n}] {tname} pc={pc} ap={info['ap']} "
+                            f"[{n}] {tname} pc={pc} ts={ts} ap={info['ap']} "
                             f"N={info['channel_count']} ch=[{chs[0]}..{chs[-1]}]"
                         )
                     else:
-                        print(f"[{n}] {tname} pc={pc} ap={info['ap']} N=0")
+                        print(f"[{n}] {tname} pc={pc} ts={ts} ap={info['ap']} N=0")
                     if args.dump_hex:
                         print(raw.hex())
                     if csv_file:
                         for ch, vals in info["iq"].items():
                             if ftype == TYPE_DIP_LOCAL:
                                 i, q = vals  # type: ignore
-                                csv_file.write(f"{pc},{ftype},{ch},{i},{q},,\n")
+                                csv_file.write(f"{pc},{ts},{ftype},{ch},{i},{q},,\n")
                             else:
                                 il, ql, ir, qr = vals  # type: ignore
-                                csv_file.write(f"{pc},{ftype},{ch},{il},{ql},{ir},{qr}\n")
+                                csv_file.write(f"{pc},{ts},{ftype},{ch},{il},{ql},{ir},{qr}\n")
                         csv_file.flush()
         except KeyboardInterrupt:
             print("\nStopped.")

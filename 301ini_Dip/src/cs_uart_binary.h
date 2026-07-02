@@ -25,7 +25,7 @@
 /** 帧同步字节 2 */
 #define CS_UART_BIN_SYNC2 0xAAU
 /** 协议版本号；帧头字段含义变更时递增，PC 端可据此分支解析 */
-#define CS_UART_BIN_VERSION 0x01U
+#define CS_UART_BIN_VERSION 0x02U
 
 /** 信道位图字节数：75 个 fft 格点 → ceil(75/8)=10 字节（80 bit，高 5 bit 保留） */
 #define CS_UART_BIN_CHANNEL_BITMAP_BYTES 10U
@@ -34,10 +34,19 @@
 
 /**
  * 单帧最大长度上界。
- * 头(22) + 全信道双端 IQ(75×8=600) + CRC(2) = 624，取 640 留余量。
+ * 头(30) + 全信道双端 IQ(75×8=600) + CRC(2) = 632，取 640 留余量。
  * DIP 本地帧（75×4）亦在此上限内。
  */
 #define CS_UART_BIN_MAX_FRAME_SIZE 640U
+
+/** 固定头字节数（含 10 字节 channel_bitmap） */
+#define CS_UART_BIN_HEADER_SIZE 30U
+
+/**
+ * payload_len 中 procedure_counter 之后、IQ 区之前的固定字节数：
+ * timestamp_ms(8) + ap/iq_format/channel_count/reserved(4) + bitmap(10)
+ */
+#define CS_UART_BIN_PAYLOAD_META_BYTES 22U
 
 /** 帧类型：DIP 本地 IQ，每有效信道 4 字节（int16 i + int16 q） */
 #define CS_UART_BIN_TYPE_DIP_LOCAL_IQ 0x01U
@@ -59,11 +68,12 @@
 /**
  * @brief 二进制 UART 帧固定头（packed，无编译器填充）
  *
- * 内存布局（22 字节）后紧接变长 IQ 区，再跟 2 字节 CRC16-CCITT（LE）。
+ * 内存布局（30 字节）后紧接变长 IQ 区，再跟 2 字节 CRC16-CCITT（LE）。
  * IQ 区不嵌入本结构体；组帧时先写头与 IQ，再对 [sync1 .. IQ末] 算 CRC。
  *
  * payload_len：从 procedure_counter 首字节到 IQ 区最后一字节的长度（不含 sync..type、
  *               payload_len 自身、CRC）。
+ * timestamp_ms：k_uptime_get() 毫秒，自系统启动的全局单调时钟。
  */
 struct __packed cs_uart_bin_header {
   uint8_t sync1;
@@ -73,6 +83,7 @@ struct __packed cs_uart_bin_header {
   uint16_t payload_len;
   /** DIP：CS procedure_counter；CS 双端：RAS ranging_counter */
   uint16_t procedure_counter;
+  uint64_t timestamp_ms;
   uint8_t ap;
   uint8_t iq_format;
   uint8_t channel_count;

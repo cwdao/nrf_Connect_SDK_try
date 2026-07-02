@@ -663,6 +663,7 @@ static int dip_bin_build_frame(const struct dip_step_parse_ctx *ctx, uint8_t *fr
   hdr->version = CS_UART_BIN_VERSION;
   hdr->type = CS_UART_BIN_TYPE_DIP_LOCAL_IQ;
   hdr->procedure_counter = sys_cpu_to_le16(ctx->procedure_counter);
+  hdr->timestamp_ms = sys_cpu_to_le64(k_uptime_get());
   hdr->ap = ap;
   hdr->iq_format = CS_UART_BIN_IQ_FORMAT_INT16;
   hdr->channel_count = channel_count;
@@ -670,8 +671,8 @@ static int dip_bin_build_frame(const struct dip_step_parse_ctx *ctx, uint8_t *fr
   memcpy(hdr->channel_bitmap, bitmap, CS_UART_BIN_CHANNEL_BITMAP_BYTES);
 
   const uint16_t payload_len =
-      (uint16_t)(sizeof(hdr->procedure_counter) + sizeof(hdr->ap) + sizeof(hdr->iq_format) +
-                 sizeof(hdr->channel_count) + sizeof(hdr->reserved) +
+      (uint16_t)(sizeof(hdr->procedure_counter) + sizeof(hdr->timestamp_ms) + sizeof(hdr->ap) +
+                 sizeof(hdr->iq_format) + sizeof(hdr->channel_count) + sizeof(hdr->reserved) +
                  CS_UART_BIN_CHANNEL_BITMAP_BYTES + iq_size);
 
   hdr->payload_len = sys_cpu_to_le16(payload_len);

@@ -83,7 +83,7 @@ ranging_data_get_complete_cb
 
 ---
 
-## 4. 共用帧头（22 字节）
+## 4. 共用帧头（30 字节，version 0x02）
 
 定义于 `cs_uart_binary.h` 的 `struct cs_uart_bin_header`。  
 DIP 与 CS 仅在下述字段有差异：
@@ -92,8 +92,9 @@ DIP 与 CS 仅在下述字段有差异：
 |------|------------|-----------|
 | `type` | `0x01` | `0x02` |
 | `procedure_counter` | CS procedure 计数 | RAS `ranging_counter` |
+| `timestamp_ms` | 组帧时 `k_uptime_get()` | `store_cs_de_report_t::timestamp_ms` |
 | IQ 区 | 每信道 4 B | 每信道 8 B |
-| `payload_len` | `16 + 4×N` | `16 + 8×N` |
+| `payload_len` | `24 + 4×N` | `24 + 8×N` |
 
 CRC、位图编码、字节序规则相同。
 

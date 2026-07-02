@@ -26,7 +26,7 @@
 | `0x01` | DIP 本地 IQ | `int16 i` + `int16 q`（4 B） | [DIP_binary_protocol.md](./DIP_binary_protocol.md) |
 | `0x02` | CS 双端 IQ | `int16 i_local` + `q_local` + `i_remote` + `q_remote`（8 B） | 本文 |
 
-同步字、版本、CRC、位图编码与 DIP v2 一致：`sync1=0x55`, `sync2=0xAA`, `version=0x01`。
+同步字、版本、CRC、位图编码与 DIP v2 一致：`sync1=0x55`, `sync2=0xAA`, `version=0x02`。
 
 ---
 
@@ -37,20 +37,21 @@
 ----   ----    ----                 ----
 0      1       sync1                固定 0x55
 1      1       sync2                固定 0xAA
-2      1       version              当前 0x01
+2      1       version              当前 0x02（0x01 为无 timestamp 的旧版）
 3      1       type                 0x02 = CS 双端 IQ 帧
 4      2       payload_len          LE；见 §4
 6      2       procedure_counter    LE；RAS ranging_counter
-8      1       ap                   天线路径，当前多为 0
-9      1       iq_format            0 = int16 I/Q
-10     1       channel_count        有效 fft 信道数 N
-11     1       reserved             填 0
-12     10      channel_bitmap[10]   与 DIP 相同，见 DIP 文档 §3
-22     8×N     IQ payload           按 ch 升序，每信道 4×int16
-22+8N  2       crc16                LE；CRC16-CCITT，与 DIP 相同
+8      8       timestamp_ms         LE；k_uptime_get() 毫秒（与文本/Flash 路径一致）
+16     1       ap                   天线路径，当前多为 0
+17     1       iq_format            0 = int16 I/Q
+18     1       channel_count        有效 fft 信道数 N
+19     1       reserved             填 0
+20     10      channel_bitmap[10]   与 DIP 相同，见 DIP 文档 §3
+30     8×N     IQ payload           按 ch 升序，每信道 4×int16
+30+8N  2       crc16                LE；CRC16-CCITT，与 DIP 相同
 ```
 
-**整帧长度** = `22 + 8×N + 2` = `24 + 8×N` 字节。
+**整帧长度** = `30 + 8×N + 2` = `32 + 8×N` 字节。
 
 N=75（满信道）时约 **624** 字节（`CS_UART_BIN_MAX_FRAME_SIZE=640`）。
 
@@ -61,8 +62,8 @@ N=75（满信道）时约 **624** 字节（`CS_UART_BIN_MAX_FRAME_SIZE=640`）�
 从 **`procedure_counter` 第一个字节** 起，到 **IQ 区最后一字节** 止（**不含** sync～type、payload_len 自身、CRC）：
 
 ```
-payload_len = 2 + 4 + 10 + (8 × channel_count)
-            = 16 + 8×N
+payload_len = 2 + 8 + 4 + 10 + (8 × channel_count)
+            = 24 + 8×N
 ```
 
 ---
@@ -142,8 +143,8 @@ cs_uart_tx 线程 → uart_poll_out
 
 | 输出方式 | 约每帧字节 | 说明 |
 |----------|-----------|------|
-| CS 二进制 type=0x02 | 24 + 576 ≈ **600** | 固定帧，无 ASCII 开销 |
-| DIP 二进制 type=0x01 | 24 + 288 ≈ **312** | 仅本地 IQ |
+| CS 二进制 type=0x02 | 32 + 576 ≈ **608** | 固定帧，无 ASCII 开销 |
+| DIP 二进制 type=0x01 | 32 + 288 ≈ **320** | 仅本地 IQ |
 | 文本 `print_report_fast` | **数千～上万** | 每信道 ASCII 浮点 + LOG 前缀 |
 
 ---
@@ -158,4 +159,5 @@ cs_uart_tx 线程 → uart_poll_out
 
 | version | 说明 |
 |---------|------|
-| 0x01 | 首版：与 DIP v2 共用帧头；type=0x02；双端 int16 IQ + CRC16；共用 cs_uart_tx 线程 |
+| 0x02 | 增加 `timestamp_ms`（uint64 LE）；固定头 30 字节 |
+| 0x01 | 首版：与 DIP v2 共用帧头；type=0x02；双端 int16 IQ + CRC16（无 timestamp） |

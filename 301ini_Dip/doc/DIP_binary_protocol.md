@@ -27,22 +27,23 @@ UART 发送线程与全功能 CS 二进制输出共用，实现见 `src/cs_uart_
 ----   ----    ----                 ----
 0      1       sync1                固定 0x55
 1      1       sync2                固定 0xAA
-2      1       version              当前 0x01
+2      1       version              当前 0x02（0x01 为无 timestamp 的旧版）
 3      1       type                 0x01 = DIP IQ 帧
 4      2       payload_len          LE；见下文
 6      2       procedure_counter    LE；CS procedure 计数
-8      1       ap                   天线路径，当前多为 0
-9      1       iq_format            0 = int16 I/Q
-10     1       channel_count        有效 fft 信道数 N
-11     1       reserved             填 0
-12     10      channel_bitmap[10]   见 §3
-22     4×N     IQ payload           按 ch 升序，每信道 int16 i + int16 q
-22+4N  2       crc16                LE；CRC16-CCITT，见 §4
+8      8       timestamp_ms         LE；k_uptime_get() 毫秒（自系统启动）
+16     1       ap                   天线路径，当前多为 0
+17     1       iq_format            0 = int16 I/Q
+18     1       channel_count        有效 fft 信道数 N
+19     1       reserved             填 0
+20     10      channel_bitmap[10]   见 §3
+30     4×N     IQ payload           按 ch 升序，每信道 int16 i + int16 q
+30+4N  2       crc16                LE；CRC16-CCITT，见 §4
 ```
 
-**整帧长度** = `22 + 4×N + 2` = `24 + 4×N` 字节。
+**整帧长度** = `30 + 4×N + 2` = `32 + 4×N` 字节。
 
-固定头（含 bitmap）共 **22 字节**（`sizeof(dip_bin_header)`）。
+固定头（含 bitmap）共 **30 字节**（`sizeof(cs_uart_bin_header)`）。
 
 ---
 
@@ -53,8 +54,8 @@ UART 发送线程与全功能 CS 二进制输出共用，实现见 `src/cs_uart_
 从 **`procedure_counter` 第一个字节** 起，到 **IQ 区最后一字节** 止的字节数（**不含** sync1～type、payload_len 自身、CRC）：
 
 ```
-payload_len = 2 + 4 + 10 + (4 × channel_count)
-            = 16 + 4×N
+payload_len = 2 + 8 + 4 + 10 + (4 × channel_count)
+            = 24 + 4×N
 ```
 
 ### 3.2 channel_bitmap
@@ -161,8 +162,8 @@ cs_uart_tx 线程（main 中 cs_uart_bin_tx_thread_start，名 cs_uart_tx）
 
 - `channel_count = 2`
 - `bitmap[0]=0x08`（bit3），`bitmap[1]=0x04`（bit2 即 ch10）
-- `payload_len = 16 + 8 = 24`
-- 帧长约 `22 + 8 + 2 = 32` 字节（含 CRC）
+- `payload_len = 24 + 8 = 32`
+- 帧长约 `30 + 8 + 2 = 40` 字节（含 CRC）
 
 PC 端解析步骤见 [DIP_binary_pc_parser.md](./DIP_binary_pc_parser.md)；参考脚本 [dip_parse_uart.py](./dip_parse_uart.py)。
 
@@ -175,7 +176,7 @@ PC 端解析步骤见 [DIP_binary_pc_parser.md](./DIP_binary_pc_parser.md)；参
 | 有效信道 | 每样本 1B ap + 1B ch | 10B channel_bitmap |
 | IQ 区 | 每样本 4B | 仅有效信道，4×N B |
 | 头部 | n_ap + sample_count | ap + channel_count + iq_format |
-| 典型帧长 | 随样本线性增长 | 22 + 4N + 2，N≤75 |
+| 典型帧长 | 随样本线性增长 | 30 + 4N + 2，N≤75 |
 
 ---
 
@@ -183,4 +184,5 @@ PC 端解析步骤见 [DIP_binary_pc_parser.md](./DIP_binary_pc_parser.md)；参
 
 | version | 说明 |
 |---------|------|
-| 0x01 | single AP + bitmap + int16 IQ + CRC16；默认 msgq 非阻塞发送 |
+| 0x02 | 在 procedure_counter 后增加 `timestamp_ms`（uint64 LE）；固定头 30 字节 |
+| 0x01 | single AP + bitmap + int16 IQ + CRC16；固定头 22 字节（无 timestamp） |

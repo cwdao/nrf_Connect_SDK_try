@@ -33,7 +33,7 @@ pip install pyserial
 
 ```
 打开串口 → 循环读字节 → 状态机搜 0x55 0xAA
-  → 读满固定头 22 字节 → 根据 payload_len 读 IQ + CRC
+  → 读 version → 读满固定头（v0x02: 30 字节）→ 根据 payload_len 读 IQ + CRC
   → 校验 CRC → 按 bitmap 展开 IQ 字典
 ```
 
@@ -41,28 +41,31 @@ pip install pyserial
 
 ---
 
-## 3. 固定头解析（22 字节）
+## 3. 固定头解析（30 字节，version 0x02）
 
-读完 `sync1,sync2,version,type` 后，继续读取直至凑满 22 字节头（含 10 字节 bitmap）：
+读完 `sync1,sync2,version,type` 后，继续读取直至凑满 30 字节头（含 10 字节 bitmap）：
 
-| 字段 | 解析 |
-|------|------|
-| `payload_len` | `struct.unpack_from("<H", buf, 4)[0]` |
-| `procedure_counter` | `unpack("<H", buf, 6)` |
-| `ap` | `buf[8]` |
-| `iq_format` | `buf[9]`，当前应为 0 |
-| `channel_count` | `buf[10]` |
-| `reserved` | `buf[11]` |
-| `channel_bitmap` | `buf[12:22]` |
+| 字段 | 偏移 | 解析 |
+|------|------|------|
+| `payload_len` | 4 | `struct.unpack_from("<H", buf, 4)[0]` |
+| `procedure_counter` | 6 | `unpack("<H", buf, 6)` |
+| `timestamp_ms` | 8 | `unpack("<Q", buf, 8)` |
+| `ap` | 16 | `buf[16]` |
+| `iq_format` | 17 | `buf[17]`，当前应为 0 |
+| `channel_count` | 18 | `buf[18]` |
+| `reserved` | 19 | `buf[19]` |
+| `channel_bitmap` | 20 | `buf[20:30]` |
 
-**整帧长度**：
+**整帧长度**（v0x02）：
 
 ```python
-frame_len = 22 + (payload_len - 16) + 2   # 等价于 24 + 4*channel_count
-# 或：frame_len = 22 + 4 * channel_count + 2
+frame_len = 30 + (payload_len - 24) + 2   # 等价于 32 + 4*channel_count
+# 或：frame_len = 30 + 4 * channel_count + 2
 ```
 
-其中 `payload_len - 16 == 4 * channel_count`（IQ 区字节数）。
+其中 `payload_len - 24 == 4 * channel_count`（IQ 区字节数）。
+
+**version 0x01（旧版）**：固定头 22 字节，无 `timestamp_ms`，`payload_fixed=16`，`frame_len = 22 + (payload_len - 16) + 2`。
 
 ---
 
@@ -81,8 +84,8 @@ def crc16_ccitt(data: bytes) -> int:
     return crc
 ```
 
-校验：`crc16_ccitt(frame[0 : 22 + iq_len]) == struct.unpack_from("<H", frame, 22 + iq_len)[0]`  
-其中 `iq_len = payload_len - 16`。
+校验：`crc16_ccitt(frame[0 : 30 + iq_len]) == struct.unpack_from("<H", frame, 30 + iq_len)[0]`  
+其中 `iq_len = payload_len - 24`（v0x02）。
 
 ---
 
@@ -129,7 +132,7 @@ python dip_parse_uart.py /dev/ttyACM0
 ```text
 --baud 115200
 --dump-hex        # 打印每帧十六进制
---csv out.csv     # 追加写入 pc,ch,i,q
+--csv out.csv     # 追加写入 pc,timestamp_ms,ch,i,q
 ```
 
 脚本逻辑：同步字搜索 → 读头 → 读剩余 → CRC → 打印/存盘。

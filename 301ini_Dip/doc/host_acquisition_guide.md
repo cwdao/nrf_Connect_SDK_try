@@ -26,7 +26,7 @@
 ### 2.1 必读（字段定义与帧格式）
 
 1. **[DIP_binary_protocol.md](./DIP_binary_protocol.md)**  
-   定义共用帧头（22 字节）、`payload_len` 计算、10 字节信道位图、CRC16-CCITT、线程化发送架构。  
+   定义共用帧头（30 字节，version 0x02）、`timestamp_ms`、`payload_len` 计算、10 字节信道位图、CRC16-CCITT、线程化发送架构。  
    DIP（type `0x01`）的 IQ 区格式以本文为准。
 
 2. **[CS_binary_protocol.md](./CS_binary_protocol.md)**  
@@ -123,17 +123,19 @@ python cs_parse_uart.py COM3 --csv out.csv
 读取 version(1)、type(1)、payload_len(2 LE)
     │
     ▼
-根据 type 计算 IQ 区长度与整帧长度：
-  iq_len   = payload_len - 16
+根据 version 与 type 计算 IQ 区长度与整帧长度：
+  version 0x02: hdr=30, payload_fixed=24
+  version 0x01: hdr=22, payload_fixed=16（旧版，无 timestamp_ms）
+  iq_len   = payload_len - payload_fixed
   type 0x01: iq_len 须为 4 的倍数，每信道 4 字节
   type 0x02: iq_len 须为 8 的倍数，每信道 8 字节
-  frame_len = 22 + iq_len + 2
+  frame_len = hdr + iq_len + 2
     │
     ▼
-收满 frame_len 字节后做 CRC16-CCITT（覆盖 buf[0 .. 22+iq_len-1]）
+收满 frame_len 字节后做 CRC16-CCITT（覆盖 buf[0 .. hdr+iq_len-1]）
     │
     ▼
-解析 ap、channel_count、channel_bitmap[10]
+解析 procedure_counter、timestamp_ms（v0x02）、ap、channel_count、channel_bitmap[10]
     │
     ▼
 按 bitmap 中置位信道升序读取 IQ：
@@ -147,9 +149,9 @@ python cs_parse_uart.py COM3 --csv out.csv
 **`payload_len` 定义**（与固件一致）：从 `procedure_counter` 首字节起，到 IQ 区最后一字节止，**不含** sync～type、payload_len 自身、CRC。
 
 ```
-payload_len = 16 + (每信道字节数 × channel_count)
-            = 16 + 4×N   （type 0x01）
-            = 16 + 8×N   （type 0x02）
+payload_len = 24 + (每信道字节数 × channel_count)
+            = 24 + 4×N   （type 0x01）
+            = 24 + 8×N   （type 0x02）
 ```
 
 ---
@@ -160,9 +162,10 @@ payload_len = 16 + (每信道字节数 × channel_count)
 
 | 字段 | 来源 | 说明 |
 |------|------|------|
-| `version` | 帧头 | 当前固件为 `0x01` |
+| `version` | 帧头 | 当前固件为 `0x02` |
 | `type` | 帧头 | `0x01` DIP / `0x02` CS 双端 |
 | `procedure_counter` | 帧头 uint16 LE | DIP：CS procedure 计数；CS：`ranging_counter` |
+| `timestamp_ms` | 帧头 uint64 LE | `k_uptime_get()` 毫秒（v0x02 起） |
 | `ap` | 帧头 | 天线路径，当前多为 `0` |
 | `channel_count` | 帧头 | 须等于位图中置 1 的位数 |
 | `channels` | 位图展开 | fft 下标 `0..74` |
@@ -176,7 +179,7 @@ fft_ch = hci_channel - 2
 
 **当前二进制帧未包含的字段**（若上位机需要，需另辟通道或扩展协议）：
 
-- `report_index`、`timestamp_ms`（仅文本/Flash 路径有）
+- `report_index`（仅文本/Flash 路径有）
 - 距离估计（`ifft` / `phase_slope` / `rtt` / `best`）
 - `tone_quality`、`role` 等元数据
 
