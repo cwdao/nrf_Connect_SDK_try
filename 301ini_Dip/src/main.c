@@ -101,27 +101,11 @@ static const uint32_t TEST_RANGING_COUNT = 25; // 测试测距次数
 
 #define NEED_LOG 0 // 是否需要信息输出（用于提升速度）
 
-/* DIP 第一版：为 1 时在 main() 中跳过 RAS 订阅，仅走本地 HCI subevent 解析，避免 ranging 回调与
- * latest_local_steps 不同步。恢复旧测距链路时改为 0。不影响 legacy 源码保留与编译。 */
-#ifndef APP_CS_DIP_BYPASS_RAS
-#define APP_CS_DIP_BYPASS_RAS 1
-#endif
-
-/* DIP 报告打印：0 仅一行 pc（减轻 UART/deferred log，便于对比 abort 是否减轻）；1 为多信道 IQ 详版 */
-#ifndef DIP_REPORT_LOG_VERBOSE
-#define DIP_REPORT_LOG_VERBOSE 1
-#endif
-
 /*
- * DIP 二进制 UART 输出开关（与 DIP_REPORT_LOG_VERBOSE 互斥，见 dip_parse_local_iq_from_subevent）：
- *   1 — 解析完成后调用 dip_output_local_report_binary()，经 console UART 发 v2 二进制帧；
- *   0 — 保持原有 LOG_INF 文本输出（详版或多信道 IQ 行）。
- * 测试二进制时建议同时将 DIP_REPORT_LOG_VERBOSE 置 0，并降低全局日志等级，避免 ASCII 与二进制混流。
- * 协议与 PC 解析见 doc/DIP_binary_protocol.md、doc/DIP_binary_pc_parser.md。
+ * DIP / Legacy 模式与 UART 二进制开关见 app_cs_mode.h（APP_CS_MODE_DIP、APP_CS_UART_BINARY）。
+ * 下列宏由该头文件推导：APP_CS_DIP_BYPASS_RAS、DIP_REPORT_BINARY_OUTPUT、
+ * DIP_REPORT_LOG_VERBOSE、CS_REPORT_BINARY_OUTPUT、ENABLE_DIRECT_PRINT。
  */
-#ifndef DIP_REPORT_BINARY_OUTPUT
-#define DIP_REPORT_BINARY_OUTPUT 1
-#endif
 
 /*
  * DIP 二进制 UART 发送路径：
@@ -1323,7 +1307,11 @@ BT_CONN_CB_DEFINE(conn_cb) = {
     .le_cs_config_complete = config_create_cb,
     .le_cs_security_enable_complete = security_enable_cb,
     .le_cs_procedure_enable_complete = procedure_enable_cb,
+#if APP_CS_MODE_DIP
     .le_cs_subevent_data_available = subevent_result_dip_cb,
+#else
+    .le_cs_subevent_data_available = subevent_result_cb,
+#endif
 };
 
 // 工作队列任务处理函数。按键0负责启动蓝牙测距

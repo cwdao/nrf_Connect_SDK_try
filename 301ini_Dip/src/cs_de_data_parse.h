@@ -22,18 +22,11 @@
 #ifndef CS_DE_DATA_PARSE_H
 #define CS_DE_DATA_PARSE_H
 
+#include "app_cs_mode.h"
 #include <bluetooth/cs_de.h>
 #include <stdint.h>
 
-/**
- * 全功能 CS（Legacy + RAS）二进制 UART 输出开关。
- * 1 — ranging 完成后经 console UART 发双端 IQ 二进制帧（见 doc/CS_binary_protocol.md）；
- * 0 — 保持 LOG_INF 文本输出（print_store_cs_de_report_basic）。
- * 与 DIP_REPORT_BINARY_OUTPUT 独立；仅 APP_CS_DIP_BYPASS_RAS=0 时生效。
- */
-#ifndef CS_REPORT_BINARY_OUTPUT
-#define CS_REPORT_BINARY_OUTPUT 1
-#endif
+/* CS_REPORT_BINARY_OUTPUT：由 app_cs_mode.h 推导；可在 include 本头文件前 #define 覆盖 */
 
 /**
  * 1 — 组帧后 k_msgq 入队，由 cs_uart_tx 线程发送（推荐）；

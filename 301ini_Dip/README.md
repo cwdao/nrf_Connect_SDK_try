@@ -5,85 +5,129 @@
 - **DIP**：不等 RAS、不调用 `cs_de_populate_report` / `cs_de_calc`，适合单边 IQ 采集、链路验证与调试。  
 - **Legacy**：仍为 `subevent_result_cb` → 缓冲 `latest_local_steps` → RAS → `ranging_data_get_complete_cb` → `cs_de` 距离估计；需显式改回调与宏后才会重新启用。
 
-实现与宏默认值以 **`src/main.c`**（及 **`src/flash/flash_ops.h`** 中与 Flash/打印相关的宏）为准。
+实现与宏默认值以 **`src/app_cs_mode.h`** 为准（统一推导 `main.c`、`cs_de_data_parse.h`、`flash_ops.h` 中的相关开关）。
 
 **与本文同步的当前仓库默认（请改动后自行对照提交）：**
 
-| 宏 | 当前默认 | 说明 |
-|----|----------|------|
-| `APP_CS_DIP_BYPASS_RAS` | **1** | DIP 模式下跳过 RAS 订阅 |
-| `DIP_REPORT_BINARY_OUTPUT` | **1** | UART 二进制 IQ 帧；**0** 则走文本/精简日志 |
-| `DIP_BINARY_USE_THREAD` | **1** | **1**：msgq + 发送线程（非阻塞入队）；**0**：回调内阻塞 `uart_poll_out` |
-| `DIP_REPORT_LOG_VERBOSE` | **1** | 多信道 `ch(i,q)` 分块打印（与二进制互斥）；二进制测试建议 **0** |
-| `CS_REPORT_BINARY_OUTPUT`（`cs_de_data_parse.h`） | **1** | Legacy 路径 UART 双端 IQ 二进制帧；**0** 则文本 `print_store_cs_de_report_basic` |
-| `CS_BINARY_USE_THREAD` | **1** | 与 `CS_UART_BIN_USE_THREAD` 一致；共用 `cs_uart_tx` 线程 |
-| `FLASH_WRITE_MODE`（`flash_ops.h`） | **SINGLE** | 单次异步写 Flash |
-| `ENABLE_DIRECT_PRINT`（`flash_ops.h`） | **1** | Legacy 完成路径优先串口打印；生产可改为 **0** 写 Flash |
+| 宏（`src/app_cs_mode.h`） | 当前默认 | 说明 |
+|---------------------------|----------|------|
+| `APP_CS_MODE_DIP` | **1** | **主开关**：`1`=DIP 本地直采，`0`=全功能 CS（RAS + cs_de） |
+| `APP_CS_UART_BINARY` | **1** | **输出开关**：`1`=UART 二进制帧，`0`=LOG 文本 |
+| `DIP_BINARY_USE_THREAD`（`main.c`） | **1** | msgq + `cs_uart_tx` 发送线程 |
+| `FLASH_WRITE_MODE`（`flash_ops.h`） | **SINGLE** | Legacy 写 Flash 方式（`ENABLE_DIRECT_PRINT=0` 时生效） |
+
+由上面两项自动推导（一般无需手改）：`APP_CS_DIP_BYPASS_RAS`、`DIP_REPORT_BINARY_OUTPUT`、`DIP_REPORT_LOG_VERBOSE`、`CS_REPORT_BINARY_OUTPUT`、`ENABLE_DIRECT_PRINT`，以及 `subevent` 回调注册（`#if APP_CS_MODE_DIP`）。
 
 ---
 
-## DIP 启用与禁用
+## 模式切换清单（推荐）
 
-DIP 由 **连接回调** 与 **`APP_CS_DIP_BYPASS_RAS`** 共同决定，两处需一致。
+**只需改 `src/app_cs_mode.h` 顶部两个宏，重新编译烧录即可。** 回调、RAS 订阅、二进制/文本输出均由编译期自动对齐。
 
-### 启用 DIP（当前默认方向）
+### 快速对照
 
-1. **`BT_CONN_CB_DEFINE(conn_cb)`** 中：
+| 目标 | `APP_CS_MODE_DIP` | `APP_CS_UART_BINARY` | 串口帧 `type` | PC 脚本 |
+|------|-------------------|----------------------|---------------|---------|
+| **DIP + 二进制**（当前默认） | `1` | `1` | `0x01` 本地 IQ | `doc/dip_parse_uart.py` 或 `cs_parse_uart.py` |
+| **全功能 CS + 二进制** | `0` | `1` | `0x02` 双端 IQ | `doc/cs_parse_uart.py` |
+| DIP + 文本调试 | `1` | `0` | —（LOG 多信道） | 串口终端 |
+| 全功能 CS + 文本调试 | `0` | `0` | —（`print_report_fast`） | 串口终端 |
 
-   ```c
-   .le_cs_subevent_data_available = subevent_result_dip_cb,
-   ```
+### DIP + 二进制采集
 
-2. **旁路 RAS 订阅**（`main.c`）：
+编辑 `src/app_cs_mode.h`：
 
-   ```c
-   #define APP_CS_DIP_BYPASS_RAS 1
-   ```
+```c
+#define APP_CS_MODE_DIP      1
+#define APP_CS_UART_BINARY   1
+```
 
-   为 `1` 时不注册 `bt_ras_rreq_*_subscribe`，避免未走 `subevent_result_cb` 时 RAS 仍去拉取数据而 **`latest_local_steps` 未同步**。
+自动生效项：
 
-3. **报告输出**（`main.c`，三选一，见 `dip_parse_local_iq_from_subevent()`）：
+| 项目 | 值 |
+|------|-----|
+| subevent 回调 | `subevent_result_dip_cb` |
+| RAS 订阅 | 跳过（`APP_CS_DIP_BYPASS_RAS=1`） |
+| 输出函数 | `dip_output_local_report_binary()` |
+| 帧格式 | version `0x02`，含 `timestamp_ms`；见 `doc/DIP_binary_protocol.md` |
 
-   ```c
-   #define DIP_REPORT_BINARY_OUTPUT 1   /* UART 二进制帧（推荐采集） */
-   #define DIP_REPORT_BINARY_OUTPUT 0
-   #define DIP_REPORT_LOG_VERBOSE 1       /* LOG_INF 多信道 ch(i,q) */
-   #define DIP_REPORT_LOG_VERBOSE 0       /* 每报告仅 DIP ok pc=… */
-   ```
+采集建议：降低 `CONFIG_LOG` 级别，避免 ASCII 与 `0x55 0xAA` 混流。
 
-4. **二进制发送路径**（仅当 `DIP_REPORT_BINARY_OUTPUT=1`）：
+```bash
+cd doc
+python dip_parse_uart.py COM3
+```
 
-   ```c
-   #define DIP_BINARY_USE_THREAD 1   /* 回调入队，dip_uart_tx 线程发串口（默认） */
-   #define DIP_BINARY_USE_THREAD 0   /* 回调内直接发，便于对比 */
-   ```
+### 全功能 CS + 二进制采集
 
-### 恢复 Legacy 双端测距
+编辑 `src/app_cs_mode.h`：
 
-1. 将 subevent 回调改回：
+```c
+#define APP_CS_MODE_DIP      0
+#define APP_CS_UART_BINARY   1
+```
 
-   ```c
-   .le_cs_subevent_data_available = subevent_result_cb,
-   ```
+自动生效项：
 
-2. 关闭 RAS 旁路：
+| 项目 | 值 |
+|------|-----|
+| subevent 回调 | `subevent_result_cb` |
+| RAS 订阅 | 启用四个 `bt_ras_rreq_*_subscribe` |
+| 输出函数 | `cs_output_store_report_binary()`（须 `ENABLE_DIRECT_PRINT=1`，已自动推导） |
+| 数据流 | 本地 + 对端 step → `cs_de_populate_report` → 双端 IQ 帧 |
+| 帧格式 | type `0x02`；见 `doc/CS_binary_protocol.md` |
 
-   ```c
-   #define APP_CS_DIP_BYPASS_RAS 0
-   ```
+**硬件要求**：对端 reflector 须支持 RAS。
 
-3. 确认 `main()` 中四个 `bt_ras_rreq_*_subscribe` 均恢复执行。
+```bash
+cd doc
+python cs_parse_uart.py COM3
+```
 
-4. **Legacy 串口输出**（`cs_de_data_parse.h`，二选一）：
+### 切回 DIP（从全功能 CS）
 
-   ```c
-   #define CS_REPORT_BINARY_OUTPUT 1   /* 双端 IQ 二进制帧（推荐采集） */
-   #define CS_REPORT_BINARY_OUTPUT 0   /* LOG_INF 文本 print_report_fast */
-   ```
+将 `APP_CS_MODE_DIP` 改回 `1`；若继续二进制采集，保持 `APP_CS_UART_BINARY=1`。重新编译烧录即可，无需再改 `main.c` 里的回调名。
 
-   须同时 `ENABLE_DIRECT_PRINT=1`（`flash_ops.h`）。协议见 `doc/CS_binary_protocol.md`；PC 解析 `doc/cs_parse_uart.py`。
+### 细调（可选，覆盖推导宏）
 
-`subevent_result_cb`、`ranging_data_*` 等仍保留在工程中，仅在未注册 `subevent_result_dip_cb` 时参与运行。
+若只需改单项，可在 `#include "app_cs_mode.h"` **之前**手动 `#define`，例如：
+
+```c
+#define DIP_REPORT_LOG_VERBOSE 1   /* 强制 DIP 文本详版，即使 APP_CS_UART_BINARY=1 */
+```
+
+或继续直接改 `main.c` 中的 `DIP_BINARY_USE_THREAD`、`NEED_LOG` 等高级选项。
+
+### 切换后检查清单
+
+- [ ] 修改 `src/app_cs_mode.h` 中 `APP_CS_MODE_DIP` / `APP_CS_UART_BINARY`
+- [ ] 全功能 CS 时确认对端 RAS 可用
+- [ ] 二进制采集时降低 `CONFIG_LOG` 级别
+- [ ] 重新 **build + flash**
+- [ ] PC 端使用对应解析脚本（`type` 0x01 vs 0x02）
+- [ ] 日志中确认模式：DIP 启动见 `DIP mode: RAS RREQ subscriptions skipped`；Legacy 无此行且 RAS 订阅成功
+
+---
+
+## DIP 启用与禁用（历史说明）
+
+> **现已由 `app_cs_mode.h` 统一推导**，下列步骤仅作原理说明；日常切换请用上文「模式切换清单」。
+
+DIP 由 **subevent 回调** 与 **`APP_CS_DIP_BYPASS_RAS`** 共同决定（二者均由 `APP_CS_MODE_DIP` 控制）。
+
+### 启用 DIP（`APP_CS_MODE_DIP=1`）
+
+1. subevent 回调为 `subevent_result_dip_cb`（`main.c` 中 `#if APP_CS_MODE_DIP` 自动选择）
+2. `APP_CS_DIP_BYPASS_RAS=1`：不注册 `bt_ras_rreq_*_subscribe`
+3. 二进制：`DIP_REPORT_BINARY_OUTPUT=1`；文本：`DIP_REPORT_LOG_VERBOSE=1`
+
+### 恢复 Legacy 双端测距（`APP_CS_MODE_DIP=0`）
+
+1. subevent 回调为 `subevent_result_cb`
+2. `APP_CS_DIP_BYPASS_RAS=0`：恢复四个 RAS 订阅
+3. 二进制：`CS_REPORT_BINARY_OUTPUT=1` + `ENABLE_DIRECT_PRINT=1`
+
+`subevent_result_cb`、`ranging_data_*` 等仍保留在工程中。
 
 ---
 
@@ -185,7 +229,7 @@ python dip_parse_uart.py COM3
 | DIP 二进制 | `dip_bin_build_frame`、`cs_uart_bin_enqueue_frame`（`src/cs_uart_binary.c`） |
 | CS 二进制 | `cs_bin_build_dual_iq_frame`、`cs_output_store_report_binary`（`cs_de_data_parse.c`） |
 | UART 传输层 | `cs_uart_binary.c`（CRC、msgq、`cs_uart_tx` 线程） |
-| DIP / RAS / CS 宏 | `APP_CS_DIP_BYPASS_RAS`、`DIP_REPORT_*`、`CS_REPORT_BINARY_OUTPUT` |
+| DIP / RAS / CS 宏 | **`src/app_cs_mode.h`**（`APP_CS_MODE_DIP`、`APP_CS_UART_BINARY`） |
 | Legacy subevent / RAS | `subevent_result_cb`、`main()` 中 `#if APP_CS_DIP_BYPASS_RAS` |
 | Zephyr API | `bt_le_cs_step_data_parse`、`bt_le_cs_parse_pct`、`bt_le_cs_get_antenna_path`（`zephyr/bluetooth/cs.h`） |
 | 双端距离与 IQ 融合 | Nordic `cs_de` / `cs_de_populate_report`（DIP **不调用**） |
@@ -194,5 +238,5 @@ python dip_parse_uart.py COM3
 
 ## 文档维护
 
-- **本 `README.md`**：工程总览、宏默认值、DIP/Legacy 切换。
+- **本 `README.md`**：工程总览、**模式切换清单**、`app_cs_mode.h` 说明。
 - **`doc/`**：DIP / CS 二进制协议与 PC 解析（见上表）；与 `src/main.c`、`src/cs_de_data_parse.c` 实现同步维护。

@@ -30,7 +30,9 @@
 #define FLASH_WRITE_MODE FLASH_WRITE_MODE_SINGLE  // 当前使用的写入模式
 
 // 直接打印模式配置（测距完成后直接打印到串口，不写入flash）
-#define ENABLE_DIRECT_PRINT 1  // 设置为1启用直接打印模式，0则写入flash
+#ifndef ENABLE_DIRECT_PRINT
+#define ENABLE_DIRECT_PRINT 1  // 默认见 app_cs_mode.h；Legacy 串口采集须为 1
+#endif
 
 // 获取 Flash 设备
 extern const struct device *flash_dev;
