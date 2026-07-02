@@ -18,11 +18,55 @@
 
 由上面两项自动推导（一般无需手改）：`APP_CS_DIP_BYPASS_RAS`、`DIP_REPORT_BINARY_OUTPUT`、`DIP_REPORT_LOG_VERBOSE`、`CS_REPORT_BINARY_OUTPUT`、`ENABLE_DIRECT_PRINT`，以及 `subevent` 回调注册（`#if APP_CS_MODE_DIP`）。
 
+**CS procedure 参数**（`bt_le_cs_set_procedure_parameters` / `default_settings`）亦在 `app_cs_mode.h` 中按模式分块配置，见下文「CS 参数配置」。
+
+---
+
+## CS 参数配置（`app_cs_mode.h`）
+
+除模式与 UART 开关外，可在同一文件内为 **DIP** 与 **全功能 CS** 分别设置 CS 时序/功率。`main.c` 根据 `APP_CS_MODE_DIP` 自动选用 `APP_CS_DIP_*` 或 `APP_CS_LEGACY_*` 参数块。
+
+### 日志字段与配置宏对照
+
+启动后 `procedure_enable_cb` 会打印协商结果，与配置宏的对应关系如下：
+
+| 日志字段 | 配置宏（DIP 前缀 `APP_CS_DIP_`，Legacy 前缀 `APP_CS_LEGACY_`） | 说明 |
+|----------|----------------------------------------------------------------|------|
+| config ID | （固定 `CS_CONFIG_ID=0`） | 配置 ID |
+| antenna configuration index | `TONE_ANTENNA_CONFIG_INDEX` | 0 = A1_B1 |
+| TX power | `MAX_TX_POWER_DBM` | `bt_le_cs_set_default_settings` |
+| subevent length | `MIN_SUBEVENT_LEN_US` / `MAX_SUBEVENT_LEN_US` | 控制器在范围内选取实际值 |
+| procedure interval | `MIN_PROCEDURE_INTERVAL` / `MAX_PROCEDURE_INTERVAL` | 连接事件间隔 |
+| procedure count | `MAX_PROCEDURE_COUNT` | 0 = 不限制 |
+| maximum procedure length | `MAX_PROCEDURE_LEN` | procedure 最大时长 |
+| （config）Mode-0 steps | `MODE_0_STEPS` | `bt_le_cs_create_config` |
+| （PHY） | `PHY_2M` | 1=2M，0=1M |
+
+**无法直接写入的日志项**（由控制器协商决定，只能间接影响）：
+
+- `subevents per event`
+- `subevent interval`
+- `event interval`
+
+蓝牙规范中 `min_subevent_len` / `procedure_interval` 等为**建议值**，SDC 可能忽略或与请求不同（例如单天线下 subevent length 常见上限约 21334 μs）。以 `procedure_enable_cb` 打印为准。
+
+### 示例：DIP 放宽 subevent、降低 procedure 频率（缓解 no_cs_sync）
+
+```c
+/* app_cs_mode.h — DIP 参数块 */
+#define APP_CS_DIP_MIN_PROCEDURE_INTERVAL      2U
+#define APP_CS_DIP_MAX_PROCEDURE_INTERVAL      4U
+#define APP_CS_DIP_MIN_SUBEVENT_LEN_US         15000U
+#define APP_CS_DIP_MAX_SUBEVENT_LEN_US         40000U
+```
+
+改完后重新编译烧录，对照日志中的 `CS procedures enabled:` 确认协商结果。
+
 ---
 
 ## 模式切换清单（推荐）
 
-**只需改 `src/app_cs_mode.h` 顶部两个宏，重新编译烧录即可。** 回调、RAS 订阅、二进制/文本输出均由编译期自动对齐。
+**只需改 `src/app_cs_mode.h`**（模式开关 + 可选 CS 参数块），重新编译烧录即可。回调、RAS 订阅、二进制/文本输出均由编译期自动对齐。
 
 ### 快速对照
 

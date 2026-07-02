@@ -127,7 +127,6 @@ static const uint32_t TEST_RANGING_COUNT = 25; // 测试测距次数
 #define CON_STATUS_LED DK_LED1
 
 #define CS_CONFIG_ID 0
-#define NUM_MODE_0_STEPS 3
 #define PROCEDURE_COUNTER_NONE (-1)
 #define DE_SLIDING_WINDOW_SIZE (10)
 #define MAX_AP (CONFIG_BT_RAS_MAX_ANTENNA_PATHS)
@@ -159,20 +158,18 @@ static uint8_t buffer_num_valid;
 static cs_de_dist_estimates_t distance_estimate_buffer[MAX_AP]
                                                       [DE_SLIDING_WINDOW_SIZE];
 
-// 此时基本上进入更细致的信道探测功能的配置了，设备已经连接，服务成功发现。
-// 设置默认的信道探测参数：
-// enable_initiator_role = true：启用发起者角色。
-// enable_reflector_role = false：禁用反射器角色。
-// 其他参数包括天线选择、最大功率等。传给bt_le_cs_set_default_settings
+/*
+ * CS 链路参数：数值来自 app_cs_mode.h 的 APP_CS_ACTIVE_*（由 APP_CS_MODE_DIP 选择 DIP/LEGACY 块）。
+ * 启用后实际值见 procedure_enable_cb 日志「CS procedures enabled:」。
+ */
 static const struct bt_le_cs_set_default_settings_param default_settings = {
     .enable_initiator_role = true,
     .enable_reflector_role = false,
     .cs_sync_antenna_selection = BT_LE_CS_ANTENNA_SELECTION_OPT_REPETITIVE,
-    // .max_tx_power = BT_HCI_OP_LE_CS_MAX_MAX_TX_POWER,
-    .max_tx_power = 8,
+    .max_tx_power = APP_CS_ACTIVE_MAX_TX_POWER_DBM, /* 日志 TX power */
 };
 
-// 创建CS配置参数，步骤类型，信道选择等等。传给bt_le_cs_create_config
+/* bt_le_cs_create_config：main_mode=2、信道选择等；mode_0_steps 见 APP_CS_ACTIVE_MODE_0_STEPS */
 static struct bt_le_cs_create_config_params config_params = {
     .id = CS_CONFIG_ID,
     .main_mode_type = BT_CONN_LE_CS_MAIN_MODE_2,
@@ -180,7 +177,7 @@ static struct bt_le_cs_create_config_params config_params = {
     .min_main_mode_steps = 1,
     .max_main_mode_steps = 1,
     .main_mode_repetition = 0,
-    .mode_0_steps = NUM_MODE_0_STEPS,
+    .mode_0_steps = APP_CS_ACTIVE_MODE_0_STEPS,
     .role = BT_CONN_LE_CS_ROLE_INITIATOR,
     .rtt_type = BT_CONN_LE_CS_RTT_TYPE_AA_ONLY,
     .cs_sync_phy = BT_CONN_LE_CS_SYNC_1M_PHY,
@@ -190,20 +187,28 @@ static struct bt_le_cs_create_config_params config_params = {
     .ch3c_jump = 2,
 };
 
-// 测距参数：interval应该是最核心的一个。假设一个procedure是50ms，那么采样间隔就是间隔N个50ms
-// 功率差：-1 = 0xff, -2 = 0xfe, -3 = 0xfd,-4 = 0xfc,-5 = 0xfb, -6 = 0xfa,-7 =
-// 0xf9,-8 = 0xf8
+#if APP_CS_ACTIVE_PHY_2M
+#define APP_CS_ACTIVE_PROCEDURE_PHY BT_LE_CS_PROCEDURE_PHY_2M
+#else
+#define APP_CS_ACTIVE_PROCEDURE_PHY BT_LE_CS_PROCEDURE_PHY_1M
+#endif
+
+/*
+ * bt_le_cs_set_procedure_parameters：在 main() 连接建立后下发。
+ * 字段与 procedure_enable_cb 日志对照见 app_cs_mode.h 文件头注释。
+ */
 static const struct bt_le_cs_set_procedure_parameters_param procedure_params = {
     .config_id = CS_CONFIG_ID,
-    .max_procedure_len = 500,
-    .min_procedure_interval = 1,
-    .max_procedure_interval = 1,
-    .max_procedure_count = 0,
-    .min_subevent_len = 10000,
-    .max_subevent_len = 40000, // 这个就是us
-    .tone_antenna_config_selection = BT_LE_CS_TONE_ANTENNA_CONFIGURATION_A1_B1,
-    .phy = BT_LE_CS_PROCEDURE_PHY_2M,
-    .tx_power_delta = 0x80, // 0x80 means no power difference
+    .max_procedure_len = APP_CS_ACTIVE_MAX_PROCEDURE_LEN,           /* 日志 maximum procedure length */
+    .min_procedure_interval = APP_CS_ACTIVE_MIN_PROCEDURE_INTERVAL, /* 日志 procedure interval 下限 */
+    .max_procedure_interval = APP_CS_ACTIVE_MAX_PROCEDURE_INTERVAL,
+    .max_procedure_count = APP_CS_ACTIVE_MAX_PROCEDURE_COUNT,       /* 日志 procedure count；0=不限 */
+    .min_subevent_len = APP_CS_ACTIVE_MIN_SUBEVENT_LEN_US,          /* 日志 subevent length 建议下限 */
+    .max_subevent_len = APP_CS_ACTIVE_MAX_SUBEVENT_LEN_US,
+    .tone_antenna_config_selection =
+        (enum bt_conn_le_cs_tone_antenna_config_selection)APP_CS_ACTIVE_TONE_ANTENNA_CONFIG_INDEX,
+    .phy = APP_CS_ACTIVE_PROCEDURE_PHY,
+    .tx_power_delta = 0x80, /* 0x80 = 无功率差建议（HCI 约定） */
     .preferred_peer_antenna = BT_LE_CS_PROCEDURE_PREFERRED_PEER_ANTENNA_1,
     .snr_control_initiator = BT_LE_CS_SNR_CONTROL_NOT_USED,
     .snr_control_reflector = BT_LE_CS_SNR_CONTROL_NOT_USED,
@@ -1736,25 +1741,6 @@ int main(void) {
     return 0;
   }
   k_sem_take(&sem_cs_security_enabled, K_FOREVER);
-
-  // 测距参数：interval应该是最核心的一个。假设一个procedure是50ms，那么采样间隔就是间隔N个50ms
-  // const struct bt_le_cs_set_procedure_parameters_param procedure_params = {
-  //     .config_id = CS_CONFIG_ID,
-  //     .max_procedure_len = 1000,
-  //     .min_procedure_interval = 10,
-  //     .max_procedure_interval = 10,
-  //     .max_procedure_count = 0,
-  //     .min_subevent_len = 60000,
-  //     .max_subevent_len = 60000,
-  //     .tone_antenna_config_selection =
-  //         BT_LE_CS_TONE_ANTENNA_CONFIGURATION_A1_B1,
-  //     .phy = BT_LE_CS_PROCEDURE_PHY_1M,
-  //     .tx_power_delta = 0x80,
-  //     .preferred_peer_antenna =
-  //     BT_LE_CS_PROCEDURE_PREFERRED_PEER_ANTENNA_1, .snr_control_initiator =
-  //     BT_LE_CS_SNR_CONTROL_NOT_USED, .snr_control_reflector =
-  //     BT_LE_CS_SNR_CONTROL_NOT_USED,
-  // };
 
   err = bt_le_cs_set_procedure_parameters(connection, &procedure_params);
   if (err) {
