@@ -57,7 +57,7 @@
  *     - UART 二进制帧 type=0x02（须对端支持 RAS）
  */
 #ifndef APP_CS_MODE_DIP
-#define APP_CS_MODE_DIP 1
+#define APP_CS_MODE_DIP 0
 #endif
 
 /**
@@ -182,6 +182,8 @@
  *
  * 语义与 DIP 块相同，可单独调参而不影响 DIP 配置。
  * 例如：Legacy 可拉长 subevent、降低 procedure 频率以换取双端 RAS 稳定性。
+ * APP_CS_LEGACY_MAX_PROCEDURE_INTERVAL 单位是ACL间隔，SDK默认是40units,50ms，
+ *一般全功能CS的间隔在400ms左右，也就是此参数为8-10
  * ============================================================================= */
 
 /** @copydoc APP_CS_DIP_MAX_PROCEDURE_LEN */
@@ -195,7 +197,7 @@
 #endif
 /** @copydoc APP_CS_DIP_MAX_PROCEDURE_INTERVAL */
 #ifndef APP_CS_LEGACY_MAX_PROCEDURE_INTERVAL
-#define APP_CS_LEGACY_MAX_PROCEDURE_INTERVAL 10U
+#define APP_CS_LEGACY_MAX_PROCEDURE_INTERVAL 5U
 #endif
 
 /** @copydoc APP_CS_DIP_MAX_PROCEDURE_COUNT */
