@@ -7,8 +7,26 @@
 /** @file
  *  @brief Channel Sounding Initiator with Inline PCT Transfer sample
  *
- *  Adds type 0x03 binary IQ upload (procedure-complete) and Button0/1
+ *  Adds type 0x03 binary IQ upload (procedure-complete) and Button1/2
  *  start/stop. See doc/IPT_数据特性与上位机适配方案.md.
+ *
+ * 上电后的操作流程：
+ *
+ * 1. 初始化 LED、按键、串口发送线程和蓝牙协议栈。
+ * 2. 被动扫描，只匹配设备名 "Nordic CS IPT Reflector"。名字对上就自动连接，
+ *    连接间隔请求为 7.5 ms。不会自动开始测量。
+ * 3. 连上后自动做 CS 准备（任一步断链都会重新扫描）：
+ *    加密到 Security Level 2 → 本机只做 Initiator → 交换 CS 能力 →
+ *    创建 CS 配置（Mode 2、inline PCT）→ 启用 CS security →
+ *    写入 procedure 参数（锚点间隔 2 个连接事件，即约 15 ms 一次）。
+ *    此时 procedure 仍是关闭的。
+ * 4. 准备完成时打印
+ *    "CS ready. Press Button 1 to start, Button 2 to stop."
+ *    连接灯亮，CS 灯不亮。
+ * 5. 按键 1（DK_BTN1）启动测量，CS 灯亮；按键 2（DK_BTN2）停止测量，
+ *    CS 灯灭，ACL 连接保持。
+ * 6. 断链后两盏灯都灭，procedure 被关掉，重新扫描。再次连上后仍需再按按键 1
+ *    才会开始测量。
  */
 
 #include <errno.h>
