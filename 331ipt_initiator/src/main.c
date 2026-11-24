@@ -507,6 +507,10 @@ static void procedure_enable_cb(struct bt_conn *conn, uint8_t status,
 
 	if (status == BT_HCI_ERR_SUCCESS) {
 		if (params->state == 1) {
+			/* procedure_interval：相邻两次 procedure 锚点间隔的 ACL 连接事件数，
+			 * 不是 0.625 ms。当前请求为 2，连接间隔 7.5 ms 时即 15 ms 测一次。
+			 * subevent_len：控制器最终采用的单个 subevent 时长，单位微秒。
+			 */
 			LOG_WRN("CS procedures enabled (interval %u, subevent_len %u us)",
 				params->procedure_interval, params->subevent_len);
 		} else {
@@ -746,24 +750,62 @@ static int cs_setup_on_connection(const struct bt_le_conn_param *conn_param)
 		return err;
 	}
 
-	/* scale factor of conn_interval units to proc_interval units is 1.25/0.625 = 2 */
+	/*
+	 * 两次 IPT 测量的起点间隔 = procedure_interval × ACL 连接间隔。
+	 *
+	 * ACL 连接间隔来自 main() 的 BT_LE_CONN_PARAM(6, 6, ...)：
+	 * 连接间隔单位是 1.25 ms，6 × 1.25 ms = 7.5 ms。
+	 *
+	 * desired_procedure_interval 的单位不是毫秒，而是「相邻两次 CS procedure
+	 * 锚点之间隔几个 ACL 连接事件」。这里固定为 2，所以测量起点间隔
+	 * = 2 × 7.5 ms = 15 ms。控制器在 Procedure Enable Complete 里回报的
+	 * procedure_interval 才是最终采用值；请求的上下限都是 2，接受后就是
+	 * 每 15 ms 起一次 procedure。
+	 *
+	 * 0.625 ms 是 max_procedure_len（以及 CS subevent 间隔）的时间单位，
+	 * 不是 procedure_interval 的单位。它来自蓝牙基带时隙：1 slot = 625 µs
+	 * （1 秒 1600 个 slot）。协议里各参数挂在不同倍数上：
+	 *   - 广播 / 扫描间隔：N × 0.625 ms（1 个 slot）
+	 *   - ACL 连接间隔：  N × 1.25 ms（2 个 slot）
+	 *   - CS max_procedure_len：N × 0.625 ms（1 个 slot）
+	 * 因此 1.25 / 0.625 = 2：一个连接间隔等于 2 个 0.625 ms 刻度。
+	 * interval_max * 2 = 6 * 2 = 12，表示 7.5 ms。
+	 *
+	 * max_procedure_len 取 (procedure_interval - 1) 个连接间隔，
+	 * 即 12 × 1 = 12 → 7.5 ms。这是单次 procedure 允许的最长时间，
+	 * 用来保证它在下一次锚点之前结束，不是两次测量的间隔。
+	 */
 	const uint16_t acl_interval_in_proc_interval_units = conn_param->interval_max * 2;
+	/* 锚点间隔：2 个连接事件 → 2 × 7.5 ms = 15 ms */
 	uint16_t desired_procedure_interval = 2;
+	/* 单次 procedure 最长 7.5 ms（12 × 0.625 ms），短于 15 ms 的锚点间隔 */
 	uint16_t desired_max_procedure_length =
 		acl_interval_in_proc_interval_units * (desired_procedure_interval - 1);
 
 	const struct bt_le_cs_set_procedure_parameters_param procedure_params = {
 		.config_id = CS_CONFIG_ID,
+		/* 单位 0.625 ms。12 → 7.5 ms，单次 procedure 时长上限 */
 		.max_procedure_len = desired_max_procedure_length,
+		/* 单位是 ACL 连接事件个数，不是 0.625 ms。上下限相同，固定每 2 个连接事件测一次 */
 		.min_procedure_interval = desired_procedure_interval,
 		.max_procedure_interval = desired_procedure_interval,
+		/* 0：不限制 procedure 次数，直到按键停止 */
 		.max_procedure_count = 0,
+		/* 建议的单个 CS subevent 时长，单位微秒：11000 µs = 11 ms。
+		 * 这是建议值，控制器可以再协商。它长于上面的 max_procedure_len（7.5 ms），
+		 * 实际长度以 Procedure Enable Complete 回报的 subevent_len 为准。
+		 */
 		.min_subevent_len = 11000,
 		.max_subevent_len = 11000,
+		/* 双方各 1 根天线（ACI 0） */
 		.tone_antenna_config_selection = BT_LE_CS_TONE_ANTENNA_CONFIGURATION_A1_B1,
+		/* CS procedure 使用 LE 2M PHY */
 		.phy = BT_LE_CS_PROCEDURE_PHY_2M,
+		/* 0x80：不建议对端相对当前 PHY 调整发射功率 */
 		.tx_power_delta = 0x80,
+		/* 优先使用对端天线 1 */
 		.preferred_peer_antenna = BT_LE_CS_PROCEDURE_PREFERRED_PEER_ANTENNA_1,
+		/* 不使用发起方 / 反射方 SNR 控制 */
 		.snr_control_initiator = BT_LE_CS_SNR_CONTROL_NOT_USED,
 		.snr_control_reflector = BT_LE_CS_SNR_CONTROL_NOT_USED,
 	};
@@ -798,6 +840,13 @@ int main(void)
 		return 0;
 	}
 
+	/*
+	 * 建链时请求的 ACL 参数，之后传给 cs_setup_on_connection() 换算 CS 调度。
+	 * interval_min = interval_max = 6，单位 1.25 ms，连接间隔固定 7.5 ms。
+	 * latency = 0：每个连接事件都要响应，不能跳过。
+	 * 监督超时 4000 ms（HCI 单位是 10 ms）。
+	 * 两次 IPT 测量间隔 = procedure_interval(2) × 7.5 ms = 15 ms。
+	 */
 	struct bt_le_conn_param conn_param_storage = *BT_LE_CONN_PARAM(6, 6, 0,
 								      BT_GAP_MS_TO_CONN_TIMEOUT(4000));
 	struct bt_scan_init_param scan_params = {
