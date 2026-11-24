@@ -57,7 +57,7 @@
  *     - UART 二进制帧 type=0x02（须对端支持 RAS）
  */
 #ifndef APP_CS_MODE_DIP
-#define APP_CS_MODE_DIP 0
+#define APP_CS_MODE_DIP 1
 #endif
 
 /**
