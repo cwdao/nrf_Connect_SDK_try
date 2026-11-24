@@ -25,6 +25,7 @@
 |------|------|----------------------|------|
 | `0x01` | DIP 本地 IQ | `int16 i` + `int16 q`（4 B） | [DIP_binary_protocol.md](./DIP_binary_protocol.md) |
 | `0x02` | CS 双端 IQ | `int16 i_local` + `q_local` + `i_remote` + `q_remote`（8 B） | 本文 |
+| `0x03` | IPT 已合成 IQ | `int16 i` + `int16 q`（4 B） | [../../331ipt_initiator/doc/IPT_binary_protocol.md](../../331ipt_initiator/doc/IPT_binary_protocol.md) |
 
 同步字、版本、CRC、位图编码与 DIP v2 一致：`sync1=0x55`, `sync2=0xAA`, `version=0x02`。
 

@@ -2,22 +2,23 @@
 
 本文说明如何基于本工程固件的 **console UART 二进制输出**，开发 PC 端（上位机）采集与解析程序。与固件协议文档、参考脚本、源码位置一一对应，便于独立实现或移植到其他语言。
 
-**适用对象**：需要接收 DIP 本地 IQ 或全功能 CS 双端 IQ 二进制帧的上位机开发者。
+**适用对象**：需要接收 DIP 本地 IQ、全功能 CS 双端 IQ，或 **IPT 已合成 IQ** 二进制帧的上位机开发者。
 
 ---
 
 ## 1. 开发前：确认固件运行模式
 
-固件通过条件编译在两条路径间切换，**同一串口、同一帧头**，但 `type` 字段与 IQ 载荷宽度不同：
+固件通过工程/条件编译切换路径，**同一串口、同一帧头**，但 `type` 字段与 IQ 载荷宽度（及相位语义）不同：
 
-| 模式 | 关键宏 | 帧 `type` | 每有效信道 IQ 字节数 | 协议文档 |
-|------|--------|-----------|---------------------|----------|
-| **DIP 本地直采** | `APP_CS_DIP_BYPASS_RAS=1` | `0x01` | 4（`i`, `q`） | [DIP_binary_protocol.md](./DIP_binary_protocol.md) |
-| **全功能 CS（RAS + cs_de）** | `APP_CS_DIP_BYPASS_RAS=0` | `0x02` | 8（`i_local`, `q_local`, `i_remote`, `q_remote`） | [CS_binary_protocol.md](./CS_binary_protocol.md) |
+| 模式 | 工程 / 关键宏 | 帧 `type` | 每有效信道 IQ 字节数 | 协议文档 |
+|------|---------------|-----------|---------------------|----------|
+| **DIP 本地直采** | `301ini_Dip`，`APP_CS_DIP_BYPASS_RAS=1` | `0x01` | 4（`i`, `q`） | [DIP_binary_protocol.md](./DIP_binary_protocol.md) |
+| **全功能 CS（RAS + cs_de）** | `301ini_Dip`，`APP_CS_DIP_BYPASS_RAS=0` | `0x02` | 8（`i_local`, `q_local`, `i_remote`, `q_remote`） | [CS_binary_protocol.md](./CS_binary_protocol.md) |
+| **IPT 已合成 IQ** | `331ipt_initiator` | `0x03` | 4（`i`, `q`）；相位已是 \(2\theta_{CH}\) | [../../331ipt_initiator/doc/IPT_binary_protocol.md](../../331ipt_initiator/doc/IPT_binary_protocol.md) |
 
 工程总览、宏默认值与模式切换步骤见仓库根目录 [README.md](../README.md)。
 
-**上位机建议**：实现**一套**字节流解析状态机，根据帧内 `type` 分支处理 IQ 区（推荐直接参考 [cs_parse_uart.py](./cs_parse_uart.py)）。
+**上位机建议**：实现**一套**字节流解析状态机，根据帧内 `type` 分支处理 IQ 区（推荐直接参考 [cs_parse_uart.py](./cs_parse_uart.py)）。对 `0x03` **不要**再做双端复数相乘。
 
 ---
 
@@ -32,20 +33,23 @@
 2. **[CS_binary_protocol.md](./CS_binary_protocol.md)**  
    在 DIP v2 帧头基础上，说明 type `0x02` 的双端 IQ 载荷（每信道 8 字节）、`procedure_counter` 与 RAS `ranging_counter` 的对应关系、与文本输出的带宽对比。
 
+3. **[IPT_binary_protocol.md](../../331ipt_initiator/doc/IPT_binary_protocol.md)**（若接入 IPT）  
+   type `0x03`：帧布局与 DIP 同宽，但 IQ 已是合成相位；波特率 230400、按 procedure 一帧、按键启停与测距算法注意点。
+
 ### 2.2 实操与排错
 
-3. **[DIP_binary_pc_parser.md](./DIP_binary_pc_parser.md)**  
+4. **[DIP_binary_pc_parser.md](./DIP_binary_pc_parser.md)**  
    串口参数、同步搜帧流程、CRC 校验步骤、ASCII 日志混流、队列丢帧等常见问题。  
-   全功能 CS 二进制采集同样适用（同步/CRC/位图逻辑一致）。
+   全功能 CS / IPT 二进制采集同样适用（同步/CRC/位图逻辑一致；IPT 波特率见 IPT 文档）。
 
 ### 2.3 固件模块架构（维护者）
 
-4. **[firmware_uart_binary_architecture.md](./firmware_uart_binary_architecture.md)**  
+5. **[firmware_uart_binary_architecture.md](./firmware_uart_binary_architecture.md)**  
    `cs_uart_binary` 传输层与 `cs_de_data_parse` / `main.c` 组帧层的职责划分、调用链与宏配置。
 
 ### 2.4 工程配置速查
 
-5. **[README.md](../README.md)**  
+6. **[README.md](../README.md)**  
    宏表（`DIP_REPORT_BINARY_OUTPUT`、`CS_REPORT_BINARY_OUTPUT`、`ENABLE_DIRECT_PRINT` 等）、DIP/Legacy 切换、代码导航表。
 
 ---
@@ -56,7 +60,7 @@
 
 | 文件 | 用途 |
 |------|------|
-| [cs_parse_uart.py](./cs_parse_uart.py) | **通用**：同时解析 type `0x01`（DIP）与 `0x02`（CS 双端） |
+| [cs_parse_uart.py](./cs_parse_uart.py) | **通用**：type `0x01`（DIP）、`0x02`（CS 双端）、`0x03`（IPT 已合成） |
 | [dip_parse_uart.py](./dip_parse_uart.py) | 仅 DIP（type `0x01`） |
 
 移植到其他语言时，建议对照以下函数保持行为一致：
@@ -65,7 +69,7 @@
 |------|------|
 | `crc16_ccitt()` | CRC16-CCITT，多项式 `0x1021`，初值 `0xFFFF` |
 | `channels_from_bitmap()` | 10 字节位图 → 升序 fft 信道列表 |
-| `iq_bytes_per_channel(ftype)` | `0x01`→4，`0x02`→8 |
+| `iq_bytes_per_channel(ftype)` | `0x01`/`0x03`→4，`0x02`→8 |
 | `parse_frame()` | 定长头 + 变长 IQ + CRC 校验 |
 | `FrameReader.feed()` | 字节流缓冲、搜 `0x55 0xAA`、按 `payload_len` 定帧长 |
 
@@ -74,8 +78,8 @@
 ```bash
 cd doc
 pip install pyserial
-python cs_parse_uart.py COM3
-python cs_parse_uart.py COM3 --csv out.csv
+python cs_parse_uart.py COM3 --baud 230400
+python cs_parse_uart.py COM3 --baud 230400 --csv out.csv
 ```
 
 ### 3.2 固件源码（权威实现，文档歧义时以代码为准）

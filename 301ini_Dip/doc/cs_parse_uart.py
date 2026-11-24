@@ -5,10 +5,12 @@ CS / DIP binary UART frame parser (shared header, type-dependent IQ payload).
 
 type 0x01 — DIP local IQ:  int16 i, int16 q per channel (4 B)
 type 0x02 — CS dual IQ:     int16 i_local, q_local, i_remote, q_remote (8 B)
+type 0x03 — IPT combined IQ: int16 i, int16 q per channel (4 B); already 2θ_CH
 
 Header v0x02 adds uint64 timestamp_ms (k_uptime_get ms) after procedure_counter.
 
-See doc/DIP_binary_protocol.md and doc/CS_binary_protocol.md.
+See doc/DIP_binary_protocol.md, doc/CS_binary_protocol.md,
+and 331ipt_initiator/doc/IPT_数据特性与上位机适配方案.md.
 """
 
 from __future__ import annotations
@@ -34,6 +36,7 @@ MAX_FFT_CHANNELS = 75
 
 TYPE_DIP_LOCAL = 0x01
 TYPE_CS_DUAL = 0x02
+TYPE_IPT_COMBINED = 0x03
 
 
 def header_layout(version: int) -> Tuple[int, int, int, int]:
@@ -64,7 +67,7 @@ def channels_from_bitmap(bitmap: bytes) -> List[int]:
 
 
 def iq_bytes_per_channel(ftype: int) -> Optional[int]:
-    if ftype == TYPE_DIP_LOCAL:
+    if ftype in (TYPE_DIP_LOCAL, TYPE_IPT_COMBINED):
         return 4
     if ftype == TYPE_CS_DUAL:
         return 8
@@ -117,7 +120,7 @@ def parse_frame(frame: bytes) -> Optional[Dict]:
     iq_map: Dict[int, Union[Tuple[int, int], Tuple[int, int, int, int]]] = {}
     off = 0
     for ch in chs:
-        if ftype == TYPE_DIP_LOCAL:
+        if ftype in (TYPE_DIP_LOCAL, TYPE_IPT_COMBINED):
             i, q = struct.unpack_from("<hh", iq_bytes, off)
             off += 4
             iq_map[ch] = (i, q)
@@ -201,13 +204,15 @@ def type_name(ftype: int) -> str:
         return "DIP-local"
     if ftype == TYPE_CS_DUAL:
         return "CS-dual"
+    if ftype == TYPE_IPT_COMBINED:
+        return "IPT-combined"
     return f"unknown(0x{ftype:02x})"
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Parse CS/DIP binary UART frames")
+    parser = argparse.ArgumentParser(description="Parse CS/DIP/IPT binary UART frames")
     parser.add_argument("port", help="Serial port, e.g. COM3 or /dev/ttyACM0")
-    parser.add_argument("--baud", type=int, default=115200)
+    parser.add_argument("--baud", type=int, default=230400)
     parser.add_argument("--dump-hex", action="store_true")
     parser.add_argument(
         "--csv", metavar="FILE", help="Append procedure_counter,timestamp_ms,... rows to CSV"
@@ -248,7 +253,7 @@ def main() -> int:
                         print(raw.hex())
                     if csv_file:
                         for ch, vals in info["iq"].items():
-                            if ftype == TYPE_DIP_LOCAL:
+                            if ftype in (TYPE_DIP_LOCAL, TYPE_IPT_COMBINED):
                                 i, q = vals  # type: ignore
                                 csv_file.write(f"{pc},{ts},{ftype},{ch},{i},{q},,\n")
                             else:

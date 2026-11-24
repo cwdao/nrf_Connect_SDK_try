@@ -9,6 +9,7 @@
  * 组帧方（上层）：
  *   - DIP 本地 IQ（type 0x01）：main.c 中 dip_bin_build_frame()
  *   - CS 双端 IQ（type 0x02）：cs_de_data_parse.c 中 cs_bin_build_dual_iq_frame()
+ *   - IPT 已合成 IQ（type 0x03）：331ipt_initiator 按 procedure 组帧
  *
  * 线上协议字段定义见 doc/DIP_binary_protocol.md、doc/CS_binary_protocol.md。
  * 模块架构说明见 doc/firmware_uart_binary_architecture.md。
@@ -52,6 +53,8 @@
 #define CS_UART_BIN_TYPE_DIP_LOCAL_IQ 0x01U
 /** 帧类型：全功能 CS 双端 IQ，每有效信道 8 字节（i_local,q_local,i_remote,q_remote） */
 #define CS_UART_BIN_TYPE_CS_DUAL_IQ 0x02U
+/** 帧类型：IPT 已合成 IQ（相位已是 2θ_CH），每有效信道 4 字节（int16 i + int16 q） */
+#define CS_UART_BIN_TYPE_IPT_COMBINED_IQ 0x03U
 
 /** iq_format 字段：0 表示 IQ 载荷为有符号 int16、little-endian */
 #define CS_UART_BIN_IQ_FORMAT_INT16 0U
